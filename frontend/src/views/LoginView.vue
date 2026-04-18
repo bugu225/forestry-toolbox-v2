@@ -8,26 +8,32 @@ import { useAuthStore } from "../stores/auth";
 const router = useRouter();
 const authStore = useAuthStore();
 const loading = ref(false);
-const isRegisterMode = ref(false);
 
 const form = reactive({
   username: "",
   password: "",
 });
 
+function resolveLoginError(error) {
+  const serverMsg = error?.response?.data?.error?.message;
+  if (serverMsg) return serverMsg;
+  if (error?.code === "ECONNABORTED" || /timeout/i.test(error?.message || "")) {
+    return "请求超时，请检查网络或稍后重试";
+  }
+  if (!error?.response) {
+    return "无法连接后端：请先在 backend 目录启动服务（如 python run.py），并确认本页使用 npm run dev 且已配置 Vite 代理 /api";
+  }
+  return "请求失败，请稍后重试";
+}
+
 async function submit() {
   loading.value = true;
   try {
-    if (isRegisterMode.value) {
-      await authStore.register(form);
-      showSuccessToast("注册成功");
-    } else {
-      await authStore.login(form);
-      showSuccessToast("登录成功");
-    }
+    await authStore.login(form);
+    showSuccessToast("登录成功");
     router.push({ name: "home" });
   } catch (error) {
-    const message = error?.response?.data?.error?.message || "请求失败，请稍后重试";
+    const message = resolveLoginError(error);
     showFailToast(message);
   } finally {
     loading.value = false;
@@ -37,18 +43,22 @@ async function submit() {
 
 <template>
   <div class="page">
-    <h1>林业百宝箱 v2</h1>
+    <h1 class="title">林业智能巡护助手-开发测试版</h1>
     <van-form @submit="submit">
       <van-cell-group inset>
-        <van-field v-model="form.username" name="username" label="用户名" required />
-        <van-field v-model="form.password" type="password" name="password" label="密码" required />
+        <van-field v-model="form.username" name="username" label="用户名" required autocomplete="username" />
+        <van-field
+          v-model="form.password"
+          type="password"
+          name="password"
+          label="密码"
+          required
+          autocomplete="current-password"
+        />
       </van-cell-group>
       <div class="actions">
         <van-button round block type="primary" native-type="submit" :loading="loading">
-          {{ isRegisterMode ? "注册并登录" : "登录" }}
-        </van-button>
-        <van-button plain round block type="default" @click="isRegisterMode = !isRegisterMode">
-          {{ isRegisterMode ? "切换到登录" : "没有账号？去注册" }}
+          使用内部账号登录
         </van-button>
       </div>
     </van-form>
@@ -57,17 +67,23 @@ async function submit() {
 
 <style scoped>
 .page {
-  padding: 24px 16px;
+  padding: 28px 16px 32px;
+  min-height: 100vh;
+  box-sizing: border-box;
+  background: #f7f8fa;
 }
 
-h1 {
+.title {
   text-align: center;
-  margin-bottom: 24px;
+  margin: 0 0 28px;
+  font-size: 18px;
+  font-weight: 600;
+  color: #323233;
+  line-height: 1.45;
+  padding: 0 8px;
 }
 
 .actions {
-  margin: 16px;
-  display: grid;
-  gap: 12px;
+  margin: 20px 16px 0;
 }
 </style>

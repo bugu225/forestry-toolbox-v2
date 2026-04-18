@@ -16,6 +16,9 @@ load_dotenv()
 
 
 class Config:
+    # 设为 0 可重新开放 POST /api/auth/register（默认关闭，仅内部账号）
+    DISABLE_PUBLIC_REGISTER = os.getenv("DISABLE_PUBLIC_REGISTER", "1").lower() in ("1", "true", "yes")
+
     SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-key")
     JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "dev-jwt-secret")
     SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL", "sqlite:///forestry_toolbox_v2.db")
@@ -32,5 +35,15 @@ class Config:
     LLM_API_BASE_URL = os.getenv("LLM_API_BASE_URL", "https://api.deepseek.com")
     LLM_API_KEY = os.getenv("LLM_API_KEY", "")
     LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "deepseek-chat")
+    # 植物识别等第三方接口（默认较短）；DeepSeek 单独使用更长超时
+    LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT_SECONDS", "90"))
+    LLM_CONTEXT_MESSAGES_MAX = int(os.getenv("LLM_CONTEXT_MESSAGES_MAX", "20"))
+    # 林业相关性门控：先发短请求分类，再决定是否完整问答（可用 LLM_FORESTRY_GATE_ENABLED=0 关闭）
+    LLM_FORESTRY_GATE_ENABLED = os.getenv("LLM_FORESTRY_GATE_ENABLED", "1").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    LLM_CLASSIFY_TIMEOUT_SECONDS = int(os.getenv("LLM_CLASSIFY_TIMEOUT_SECONDS", "20"))
     THIRD_PARTY_TIMEOUT_SECONDS = int(os.getenv("THIRD_PARTY_TIMEOUT_SECONDS", "8"))
     THIRD_PARTY_RETRIES = int(os.getenv("THIRD_PARTY_RETRIES", "1"))

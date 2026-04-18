@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { showFailToast, showSuccessToast } from "vant";
 
-import apiClient from "../api/client";
+import apiClient, { QA_ASK_TIMEOUT_MS } from "../api/client";
 import { postWithSyncRetry } from "../utils/syncRetry";
 import { useAuthStore } from "../stores/auth";
 import { clearStore, deleteRecord, getAllRecords, putRecord, stores } from "../services/offlineDb";
@@ -12,6 +12,8 @@ import { getSyncMeta, setSyncMeta } from "../services/syncMeta";
 const authStore = useAuthStore();
 const router = useRouter();
 const online = ref(navigator.onLine);
+/** 默认收起「其他」区块，主流程只保留三入口 */
+const moreActive = ref([]);
 
 const username = computed(() => authStore.user?.username || "用户");
 const pending = ref({ identify: 0, qa: 0, patrol: 0 });
@@ -184,7 +186,7 @@ async function retryQa() {
       await deleteRecord(stores.qaPendingQuestions, item.local_id);
       continue;
     }
-    const { data } = await apiClient.post("/qa/ask", { question });
+    const { data } = await apiClient.post("/qa/ask", { question }, { timeout: QA_ASK_TIMEOUT_MS });
     const sessionLocalId = `qa_session_online_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
     await putRecord(stores.qaSessions, {
       local_id: sessionLocalId,
@@ -300,67 +302,92 @@ onMounted(() => {
 
 <template>
   <div class="page">
-    <van-nav-bar title="林业百宝箱 v2" />
-    <div class="content">
-      <p>欢迎你，{{ username }}</p>
-      <p>当前已进入第二阶段：三大功能均提供“离线核心 + 联网同步”基础版。</p>
-      <div class="pwa-tip">
-        <p class="pwa-title">离线优先强烈建议：先添加到主屏幕再使用</p>
-        <p>当前 PWA 状态：{{ pwaStatusText }}</p>
-        <van-button v-if="pwaInstallReady" type="primary" block @click="triggerPwaInstall">
-          一键安装到主屏幕
-        </van-button>
-        <van-button v-else-if="!pwaInstalled" type="default" plain block>
-          若无安装按钮，请在浏览器菜单中选择“添加到主屏幕”
-        </van-button>
-        <van-button v-if="pwaUpdateReady" type="warning" block @click="applyPwaUpdateNow">
-          检测到新版本，点击立即更新
-        </van-button>
+    <van-nav-bar title="功能首页" />
+
+    <div class="home-main">
+      <p class="welcome">你好，{{ username }}</p>
+
+      <div class="entry-cards" role="navigation" aria-label="功能入口">
+        <button type="button" class="entry-card entry-card--qa" @click="goQa">
+          <span class="entry-card-title">林业知识问答</span>
+          <span class="entry-card-desc">AI 问答与知识检索</span>
+        </button>
+        <button type="button" class="entry-card entry-card--id" @click="goIdentify">
+          <span class="entry-card-title">林业识图</span>
+          <span class="entry-card-desc">拍照识植物 / 离线保存</span>
+        </button>
+        <button type="button" class="entry-card entry-card--patrol" @click="goPatrol">
+          <span class="entry-card-title">巡护助手</span>
+          <span class="entry-card-desc">轨迹与异常上报</span>
+        </button>
       </div>
-      <p>待同步：识图 {{ pending.identify }}，问答 {{ pending.qa }}，巡护 {{ pending.patrol }}</p>
-      <p>最近同步：识图 {{ syncOverview.identify.lastSuccessAt || "暂无" }}</p>
-      <p>最近同步：问答 {{ syncOverview.qa.lastSuccessAt || "暂无" }}</p>
-      <p>最近同步：巡护 {{ syncOverview.patrol.lastSuccessAt || "暂无" }}</p>
-      <div class="health-list">
-        <p class="health-title">模块健康状态</p>
-        <div v-for="item in moduleHealth" :key="item.key" class="health-item">
-          <span class="health-left">
-            <span class="health-dot" :class="`is-${item.level}`" />
-            <span>{{ item.label }}：{{ item.text }}</span>
-          </span>
-          <span class="health-hint">{{ item.hint }}</span>
-        </div>
-      </div>
-      <p>
-        待同步最多模块：{{ topPendingModule.key }}
-        （{{ topPendingModule.count }}）
-      </p>
-      <van-button type="default" plain block @click="refreshPending(); refreshSyncOverview()">
-        刷新同步状态
-      </van-button>
-      <van-button type="primary" block :loading="retryingAll" @click="retryAllSync">全部重试同步</van-button>
-      <van-button
-        type="default"
-        block
-        :disabled="!topPendingModule || topPendingModule.count <= 0"
-        @click="goTopPendingModule"
-      >
-        前往待同步最多模块
-      </van-button>
-      <van-button type="success" block @click="goIdentify">进入识图（离线优先）</van-button>
-      <van-button type="primary" block @click="goQa">进入问答（离线优先）</van-button>
-      <van-button type="warning" block @click="goPatrol">进入巡护（离线优先）</van-button>
-      <van-button type="default" block @click="goSyncAudits">查看同步审计</van-button>
-      <div v-if="retryReport.length" class="retry-report">
-        <h4>全部重试结果</h4>
-        <van-cell
-          v-for="(item, idx) in retryReport"
-          :key="`${item.module}_${idx}`"
-          :title="`${item.module}：${toStatusText(item.status)}`"
-          :label="item.detail"
-        />
-      </div>
-      <van-button type="danger" block @click="logout">退出登录</van-button>
+
+      <van-collapse v-model="moreActive" :border="false" class="more-collapse">
+        <van-collapse-item title="其他、等等" name="more" class="more-item">
+          <div class="more-inner">
+            <p class="more-line">
+              待同步：识图 {{ pending.identify }}，问答 {{ pending.qa }}，巡护 {{ pending.patrol }}
+            </p>
+            <div class="pwa-tip">
+              <p class="pwa-title">离线优先：建议添加到主屏幕</p>
+              <p>PWA：{{ pwaStatusText }}</p>
+              <van-button v-if="pwaInstallReady" type="primary" size="small" block @click="triggerPwaInstall">
+                一键安装到主屏幕
+              </van-button>
+              <van-button v-else-if="!pwaInstalled" type="default" plain size="small" block>
+                若无安装按钮，请在浏览器菜单中选择「添加到主屏幕」
+              </van-button>
+              <van-button v-if="pwaUpdateReady" type="warning" size="small" block @click="applyPwaUpdateNow">
+                检测到新版本，立即更新
+              </van-button>
+            </div>
+            <p class="more-line muted">
+              最近同步 · 识图 {{ syncOverview.identify.lastSuccessAt || "暂无" }}；问答
+              {{ syncOverview.qa.lastSuccessAt || "暂无" }}；巡护
+              {{ syncOverview.patrol.lastSuccessAt || "暂无" }}
+            </p>
+            <div class="health-list">
+              <p class="health-title">模块状态</p>
+              <div v-for="item in moduleHealth" :key="item.key" class="health-item">
+                <span class="health-left">
+                  <span class="health-dot" :class="`is-${item.level}`" />
+                  <span>{{ item.label }}：{{ item.text }}</span>
+                </span>
+                <span class="health-hint">{{ item.hint }}</span>
+              </div>
+            </div>
+            <div class="more-actions">
+              <van-button type="default" plain size="small" block @click="refreshPending(); refreshSyncOverview()">
+                刷新同步状态
+              </van-button>
+              <van-button type="primary" size="small" block :loading="retryingAll" @click="retryAllSync">
+                全部重试同步
+              </van-button>
+              <van-button
+                type="default"
+                size="small"
+                block
+                :disabled="!topPendingModule || topPendingModule.count <= 0"
+                @click="goTopPendingModule"
+              >
+                前往待同步最多模块
+              </van-button>
+              <van-button type="default" size="small" block @click="goSyncAudits">查看同步审计</van-button>
+            </div>
+            <div v-if="retryReport.length" class="retry-report">
+              <h4>全部重试结果</h4>
+              <van-cell
+                v-for="(item, idx) in retryReport"
+                :key="`${item.module}_${idx}`"
+                :title="`${item.module}：${toStatusText(item.status)}`"
+                :label="item.detail"
+              />
+            </div>
+          </div>
+        </van-collapse-item>
+      </van-collapse>
+
+      <van-button class="logout-btn" type="danger" block round @click="logout">退出登录</van-button>
     </div>
   </div>
 </template>
@@ -368,16 +395,110 @@ onMounted(() => {
 <style scoped>
 .page {
   min-height: 100vh;
-  background: #f7f8fa;
+  background: #f0f2f5;
 }
 
-.content {
-  margin: 16px;
-  padding: 16px;
-  border-radius: 8px;
+.home-main {
+  padding: 16px 16px 28px;
+  max-width: 520px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.welcome {
+  margin: 0;
+  font-size: 15px;
+  color: #646566;
+  text-align: center;
+}
+
+.entry-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.entry-card {
+  width: 100%;
+  border: none;
+  border-radius: 14px;
+  padding: 20px 18px;
+  text-align: left;
+  cursor: pointer;
+  color: #fff;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.entry-card:active {
+  transform: scale(0.98);
+}
+
+.entry-card-title {
+  display: block;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.entry-card-desc {
+  display: block;
+  margin-top: 6px;
+  font-size: 13px;
+  opacity: 0.92;
+  font-weight: 400;
+}
+
+.entry-card--qa {
+  background: linear-gradient(135deg, #3a8afe 0%, #1989fa 100%);
+}
+
+.entry-card--id {
+  background: linear-gradient(135deg, #34c759 0%, #07c160 100%);
+}
+
+.entry-card--patrol {
+  background: linear-gradient(135deg, #ffb14a 0%, #ff976a 100%);
+}
+
+.more-collapse {
   background: #fff;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.more-collapse :deep(.van-collapse-item__title) {
+  font-weight: 600;
+  color: #323233;
+}
+
+.more-inner {
   display: grid;
   gap: 12px;
+  padding-bottom: 4px;
+}
+
+.more-line {
+  margin: 0;
+  font-size: 13px;
+  color: #323233;
+  line-height: 1.5;
+}
+
+.more-line.muted {
+  color: #969799;
+  font-size: 12px;
+}
+
+.more-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.logout-btn {
+  margin-top: 4px;
 }
 
 .pwa-tip {
@@ -401,6 +522,11 @@ onMounted(() => {
   padding: 8px;
 }
 
+.retry-report h4 {
+  margin: 0 0 8px 0;
+  font-size: 14px;
+}
+
 .health-list {
   border: 1px solid #f2f3f5;
   border-radius: 8px;
@@ -412,13 +538,14 @@ onMounted(() => {
 .health-title {
   margin: 0 0 4px 0;
   font-weight: 600;
+  font-size: 13px;
 }
 
 .health-item {
   display: flex;
   justify-content: space-between;
   gap: 8px;
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .health-left {

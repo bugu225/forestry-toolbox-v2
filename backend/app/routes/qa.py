@@ -1,14 +1,20 @@
 import hashlib
 import json
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 
 from ..extensions import db
 from ..models import KnowledgeDoc, QAMessage, QASession, SyncAuditLog, SyncCheckpoint
-from ..services.llm_provider import ask_llm_or_fallback
+from ..services.llm_provider import ask_llm_or_fallback, classify_forestry_related
 
 qa_bp = Blueprint("qa", __name__)
+
+# 与 LLM 门控无关时返回给前端的固定提示（不写入用户原始提问）
+FORESTRY_SCOPE_REJECT_MESSAGE = (
+    "本助手仅回答与林业、森林管护、森林防火、林木病虫害、造林抚育、生态巡护等相关的提问。"
+    "请重新描述您与林业工作相关的问题。"
+)
 
 
 def _sessions_for_hash(sessions: list[dict]):
@@ -200,6 +206,23 @@ def _build_session_context(session_id: int, limit: int = 6):
     return context
 
 
+def _conversation_snippet_for_gate(session_id: int, limit: int = 6) -> str:
+    """供林业相关性分类使用的近期对话文本（含本轮用户句）。"""
+    rows = (
+        QAMessage.query.filter_by(session_id=session_id)
+        .order_by(QAMessage.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    lines = []
+    for row in reversed(rows):
+        label = "用户" if row.role == "user" else "助手"
+        text = (row.content or "").strip()
+        if text:
+            lines.append(f"{label}：{text}")
+    return "\n".join(lines)
+
+
 @qa_bp.post("/sync")
 @jwt_required()
 def sync_qa():
@@ -326,9 +349,32 @@ def ask_online_or_fallback():
         db.session.flush()
 
     db.session.add(QAMessage(session_id=session.id, role="user", content=question, citations=[]))
+    db.session.flush()
+
+    gate_on = current_app.config.get("LLM_FORESTRY_GATE_ENABLED", True)
+    has_llm_key = bool((current_app.config.get("LLM_API_KEY") or "").strip())
+    if gate_on and has_llm_key:
+        snippet = _conversation_snippet_for_gate(session.id, limit=6)
+        if not classify_forestry_related(question, conversation_snippet=snippet or None):
+            answer = FORESTRY_SCOPE_REJECT_MESSAGE
+            provider = "rejected-non-forestry"
+            citations = []
+            db.session.add(
+                QAMessage(session_id=session.id, role="assistant", content=answer, citations=citations)
+            )
+            db.session.commit()
+            return jsonify(
+                {
+                    "answer": answer,
+                    "citations": citations,
+                    "provider": provider,
+                    "session_id": session.id,
+                }
+            )
 
     citations = _build_rule_citations(question)
-    context_messages = _build_session_context(session.id, limit=6)
+    ctx_limit = int(current_app.config.get("LLM_CONTEXT_MESSAGES_MAX", 20))
+    context_messages = _build_session_context(session.id, limit=ctx_limit)
     answer, provider = ask_llm_or_fallback(
         question=question,
         citations=citations,

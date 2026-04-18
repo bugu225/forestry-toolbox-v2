@@ -1,10 +1,14 @@
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import create_access_token, get_jwt_identity, jwt_required
 
 from ..extensions import db
 from ..models import User
 
 auth_bp = Blueprint("auth", __name__)
+
+# 开发测试：仅允许内部固定账号登录（与前端说明一致）
+INTERNAL_USERNAME = "linye"
+INTERNAL_PASSWORD = "12345678"
 
 
 def _error(message: str, code: str = "bad_request", status_code: int = 422):
@@ -13,6 +17,9 @@ def _error(message: str, code: str = "bad_request", status_code: int = 422):
 
 @auth_bp.post("/register")
 def register():
+    if current_app.config.get("DISABLE_PUBLIC_REGISTER", True):
+        return _error("公开注册已关闭", code="registration_disabled", status_code=403)
+
     data = request.get_json(silent=True) or {}
     username = (data.get("username") or "").strip()
     password = data.get("password") or ""
@@ -47,9 +54,18 @@ def login():
     username = (data.get("username") or "").strip()
     password = data.get("password") or ""
 
-    user = User.query.filter_by(username=username).first()
-    if not user or not user.check_password(password):
-        return _error("用户名或密码错误", code="invalid_credentials", status_code=401)
+    if username != INTERNAL_USERNAME or password != INTERNAL_PASSWORD:
+        return _error("仅支持内部账号登录，请核对账号与密码", code="invalid_credentials", status_code=401)
+
+    user = User.query.filter_by(username=INTERNAL_USERNAME).first()
+    if not user:
+        user = User(username=INTERNAL_USERNAME)
+        user.set_password(INTERNAL_PASSWORD)
+        db.session.add(user)
+        db.session.commit()
+    elif not user.check_password(INTERNAL_PASSWORD):
+        user.set_password(INTERNAL_PASSWORD)
+        db.session.commit()
 
     token = create_access_token(identity=str(user.id))
     return jsonify(

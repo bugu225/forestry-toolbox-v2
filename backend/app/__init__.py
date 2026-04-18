@@ -3,7 +3,18 @@ from sqlalchemy import inspect, text
 
 from .config import Config
 from .extensions import cors, db, jwt
-from .models import KnowledgeDoc
+from .models import (
+    KnowledgeDoc,
+    PatrolEvent,
+    PatrolPoint,
+    PatrolTask,
+    PlantIdentification,
+    QAMessage,
+    QASession,
+    SyncAuditLog,
+    SyncCheckpoint,
+    User,
+)
 from .routes.auth import auth_bp
 from .routes.health import health_bp
 from .routes.identify import identify_bp
@@ -37,6 +48,7 @@ def create_app() -> Flask:
         db.create_all()
         _ensure_sqlite_extra_schema()
         _seed_knowledge_docs()
+        _ensure_single_internal_user()
 
     return app
 
@@ -95,4 +107,38 @@ def _seed_knowledge_docs() -> None:
         ),
     ]
     db.session.add_all(seeds)
+    db.session.commit()
+
+
+def _purge_user_related_data() -> None:
+    """删除依赖 users 的业务数据（顺序满足外键）。"""
+    SyncAuditLog.query.delete()
+    SyncCheckpoint.query.delete()
+    QAMessage.query.delete()
+    QASession.query.delete()
+    PatrolPoint.query.delete()
+    PatrolEvent.query.delete()
+    PatrolTask.query.delete()
+    PlantIdentification.query.delete()
+    User.query.delete()
+    db.session.commit()
+
+
+def _ensure_single_internal_user() -> None:
+    """仅保留内部账号 linye / 12345678；其余用户及关联数据一并清除。"""
+    internal_username = "linye"
+    internal_password = "12345678"
+
+    users = User.query.all()
+    ok = (
+        len(users) == 1
+        and users[0].username == internal_username
+    )
+    if ok:
+        return
+
+    _purge_user_related_data()
+    user = User(username=internal_username, role="admin")
+    user.set_password(internal_password)
+    db.session.add(user)
     db.session.commit()

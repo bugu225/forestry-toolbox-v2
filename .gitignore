@@ -2,6 +2,9 @@
 dist
 frontend/dist
 backend/instance
+backend/.venv/
+__pycache__/
+*.py[cod]
 *.db
 .env.local
 .env.*

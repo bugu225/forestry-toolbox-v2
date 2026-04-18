@@ -10,6 +10,8 @@ export default defineConfig(({ mode }) => {
   const keyPath = env.VITE_SSL_KEY || ''
   const hasCustomCert = certPath && keyPath && fs.existsSync(certPath) && fs.existsSync(keyPath)
 
+  const apiTarget = env.VITE_DEV_API_PROXY_TARGET || 'http://127.0.0.1:5000'
+
   return {
     envDir: '..',
     plugins: [vue()],
@@ -24,6 +26,13 @@ export default defineConfig(({ mode }) => {
             }
           : true
         : false,
+      // 与根目录 .env.local 中 VITE_API_BASE=/api 配套：开发时把 /api 转发到 Flask，避免跨域与误打到 Vite 静态资源
+      proxy: {
+        '/api': {
+          target: apiTarget,
+          changeOrigin: true,
+        },
+      },
     },
   }
 })

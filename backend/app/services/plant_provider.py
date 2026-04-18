@@ -1,6 +1,5 @@
 import base64
 import time
-from pathlib import Path
 
 import requests
 from flask import current_app
