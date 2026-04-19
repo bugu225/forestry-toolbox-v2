@@ -1,16 +1,16 @@
 <script setup>
 import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
+import { storeToRefs } from "pinia";
 import { useRoute, useRouter } from "vue-router";
 import { showFailToast, showSuccessToast } from "vant";
 import apiClient, { QA_ASK_TIMEOUT_MS } from "../api/client";
-import { postWithSyncRetry } from "../utils/syncRetry";
-import { clearStore, deleteRecord, getAllRecords, putRecord, stores } from "../services/offlineDb";
-import { getSyncMeta, setSyncMeta } from "../services/syncMeta";
+import { deleteRecord, getAllRecords, putRecord, stores } from "../services/offlineDb";
+import { useNetworkStore } from "../stores/network";
 
-const online = ref(navigator.onLine);
+const networkStore = useNetworkStore();
+const { effectiveOnline: online } = storeToRefs(networkStore);
 const route = useRoute();
 const router = useRouter();
-const syncing = ref(false);
 const onlineAsking = ref(false);
 const form = reactive({ question: "" });
 const sessions = ref([]);
@@ -21,8 +21,6 @@ const previewProvider = ref("");
 const cloudSessions = ref([]);
 const cloudMessages = ref([]);
 const selectedCloudSessionId = ref(null);
-const syncMeta = ref(getSyncMeta("qa"));
-const autoSyncHintShown = ref(false);
 const pendingQuestions = ref([]);
 const pendingAnswerReport = ref([]);
 const listening = ref(false);
@@ -178,9 +176,9 @@ watch(
   }
 );
 
-function withSyncSuggestion(message) {
-  const base = message || "同步失败";
-  return `${base}。请检查网络、DeepSeek Key与余额后重试。`;
+function withAskFailureHint(message) {
+  const base = message || "发送失败";
+  return `${base}。请检查网络、DeepSeek Key 与余额后重试。`;
 }
 
 /** 区分超时与其它错误，避免 LLM 较慢时误提示「Key/余额」 */
@@ -195,7 +193,7 @@ function formatQaAskFailure(error) {
   if (error?.response?.status === 401) {
     return "登录已过期，请重新登录后再试。";
   }
-  return withSyncSuggestion("发送失败");
+  return withAskFailureHint("发送失败");
 }
 
 function uid(prefix) {
@@ -597,18 +595,11 @@ async function sendChatMessage() {
     if (selectedCloudSessionId.value) {
       await loadCloudMessages(selectedCloudSessionId.value);
     }
-    syncMeta.value = setSyncMeta("qa", {
-      lastSuccessAt: new Date().toISOString(),
-      lastError: "",
-    });
 
     await nextTick();
     scrollChatToBottom();
   } catch (error) {
     const message = formatQaAskFailure(error);
-    syncMeta.value = setSyncMeta("qa", {
-      lastError: message,
-    });
     showFailToast(message);
   } finally {
     onlineAsking.value = false;
@@ -719,59 +710,10 @@ async function removePendingQuestion(localId) {
   showSuccessToast("已删除待补答问题");
 }
 
-async function syncNow() {
-  if (!online.value) {
-    showFailToast("当前离线，无法同步");
-    return;
-  }
-  syncing.value = true;
-  try {
-    const payload = {
-      sessions: await getAllRecords(stores.qaSessions),
-      messages: await getAllRecords(stores.qaMessages),
-    };
-    const { data } = await postWithSyncRetry(apiClient, "/qa/sync", payload);
-    await clearStore(stores.qaSessions);
-    await clearStore(stores.qaMessages);
-    await refreshLocal();
-    syncMeta.value = setSyncMeta("qa", {
-      lastSuccessAt: new Date().toISOString(),
-      lastError: "",
-    });
-    const sessionsCount = Number(data?.inserted_sessions || 0);
-    const messagesCount = Number(data?.inserted_messages || 0);
-    const summary = `会话${sessionsCount} / 消息${messagesCount}`;
-    showSuccessToast(data?.deduplicated ? `问答同步已去重（${summary}）` : `问答同步成功（${summary}）`);
-  } catch (error) {
-    const message = withSyncSuggestion(error?.response?.data?.error?.message || "同步失败");
-    syncMeta.value = setSyncMeta("qa", {
-      lastError: message,
-    });
-    showFailToast(message);
-  } finally {
-    syncing.value = false;
-  }
-}
-
-async function autoSyncIfPending() {
-  if (!online.value || syncing.value) return;
-  const sessionsLocal = await getAllRecords(stores.qaSessions);
-  const messagesLocal = await getAllRecords(stores.qaMessages);
-  if (!sessionsLocal.length && !messagesLocal.length) return;
-  if (!autoSyncHintShown.value) {
-    showSuccessToast("网络已恢复，已自动触发问答同步");
-    autoSyncHintShown.value = true;
-  }
-  await syncNow();
-}
-
 onMounted(async () => {
   speechSupported.value = Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
-  window.addEventListener("online", async () => {
-    online.value = true;
-    await autoSyncIfPending();
-  });
-  window.addEventListener("offline", () => (online.value = false));
+  window.addEventListener("online", () => networkStore.setNavigatorOnline(true));
+  window.addEventListener("offline", () => networkStore.setNavigatorOnline(false));
   await refreshLocal();
   await loadCloudSessions();
   const guidedQuestion = (route.query.q || "").toString().trim();

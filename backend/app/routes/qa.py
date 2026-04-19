@@ -1,11 +1,8 @@
-import hashlib
-import json
-
 from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 
 from ..extensions import db
-from ..models import KnowledgeDoc, QAMessage, QASession, SyncAuditLog, SyncCheckpoint
+from ..models import KnowledgeDoc, QAMessage, QASession
 from ..services.llm_provider import (
     ask_llm_or_fallback,
     classify_forestry_related,
@@ -19,49 +16,6 @@ FORESTRY_SCOPE_REJECT_MESSAGE = (
     "本助手仅回答与林业、森林管护、森林防火、林木病虫害、造林抚育、生态巡护等相关的提问。"
     "请重新描述您与林业工作相关的问题。"
 )
-
-
-def _sessions_for_hash(sessions: list[dict]):
-    normalized = []
-    for item in sessions:
-        normalized.append(
-            {
-                "local_id": item.get("local_id") or "",
-                "title": item.get("title") or "",
-                "created_at": item.get("created_at") or "",
-            }
-        )
-    normalized.sort(key=lambda x: (x["local_id"], x["title"], x["created_at"]))
-    return normalized
-
-
-def _messages_for_hash(messages: list[dict]):
-    normalized = []
-    for item in messages:
-        normalized.append(
-            {
-                "local_id": item.get("local_id") or "",
-                "session_local_id": item.get("session_local_id") or "",
-                "role": item.get("role") or "",
-                "content": item.get("content") or "",
-                "citations": item.get("citations") or [],
-            }
-        )
-    normalized.sort(key=lambda x: (x["session_local_id"], x["local_id"], x["role"]))
-    return normalized
-
-
-def _append_sync_audit(*, user_id: int, status: str, deduplicated: bool, summary: dict, error_message: str = ""):
-    db.session.add(
-        SyncAuditLog(
-            user_id=user_id,
-            module="qa",
-            status=status,
-            deduplicated=deduplicated,
-            summary_json=summary,
-            error_message=error_message[:500] if error_message else None,
-        )
-    )
 
 
 RULE_CITATION_LIBRARY = [
@@ -225,112 +179,6 @@ def _conversation_snippet_for_gate(session_id: int, limit: int = 6) -> str:
         if text:
             lines.append(f"{label}：{text}")
     return "\n".join(lines)
-
-
-@qa_bp.post("/sync")
-@jwt_required()
-def sync_qa():
-    identity = int(get_jwt_identity())
-    try:
-        payload = request.get_json(silent=True) or {}
-        sessions = payload.get("sessions") or []
-        messages = payload.get("messages") or []
-        dedup_payload = {
-            "sessions": _sessions_for_hash(sessions),
-            "messages": _messages_for_hash(messages),
-        }
-        payload_raw = json.dumps(dedup_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-        payload_hash = hashlib.sha256(payload_raw.encode("utf-8")).hexdigest()
-        checkpoint = SyncCheckpoint.query.filter_by(user_id=identity, module="qa", payload_hash=payload_hash).first()
-        if checkpoint:
-            cached = checkpoint.response_json or {}
-            _append_sync_audit(
-                user_id=identity,
-                status="success",
-                deduplicated=True,
-                summary={
-                    "inserted_sessions": cached.get("inserted_sessions", 0),
-                    "inserted_messages": cached.get("inserted_messages", 0),
-                },
-            )
-            db.session.commit()
-            return jsonify(
-                {
-                    "ok": True,
-                    "deduplicated": True,
-                    "mapped_sessions": cached.get("mapped_sessions", {}),
-                    "inserted_sessions": cached.get("inserted_sessions", 0),
-                    "inserted_messages": cached.get("inserted_messages", 0),
-                }
-            )
-
-        local_to_server = {}
-        inserted_sessions = 0
-        for item in sessions:
-            local_id = (item.get("local_id") or "").strip()
-            title = (item.get("title") or "").strip() or "离线问答会话"
-            session = QASession(user_id=identity, title=title)
-            db.session.add(session)
-            db.session.flush()
-            inserted_sessions += 1
-            if local_id:
-                local_to_server[local_id] = session.id
-
-        inserted_messages = 0
-        for item in messages:
-            local_session_id = (item.get("session_local_id") or "").strip()
-            session_id = local_to_server.get(local_session_id)
-            if not session_id:
-                continue
-            role = (item.get("role") or "user").strip()
-            content = (item.get("content") or "").strip()
-            if not content:
-                continue
-            db.session.add(
-                QAMessage(
-                    session_id=session_id,
-                    role=role if role in ("user", "assistant") else "user",
-                    content=content,
-                    citations=item.get("citations") or [],
-                )
-            )
-            inserted_messages += 1
-
-        response_payload = {
-            "mapped_sessions": local_to_server,
-            "inserted_sessions": inserted_sessions,
-            "inserted_messages": inserted_messages,
-        }
-        db.session.add(
-            SyncCheckpoint(
-                user_id=identity,
-                module="qa",
-                payload_hash=payload_hash,
-                response_json=response_payload,
-            )
-        )
-        _append_sync_audit(
-            user_id=identity,
-            status="success",
-            deduplicated=False,
-            summary={
-                "inserted_sessions": inserted_sessions,
-                "inserted_messages": inserted_messages,
-            },
-        )
-        db.session.commit()
-        return jsonify({"ok": True, "deduplicated": False, **response_payload})
-    except Exception as exc:  # noqa: BLE001
-        db.session.rollback()
-        _append_sync_audit(
-            user_id=identity,
-            status="failed",
-            deduplicated=False,
-            summary={},
-            error_message=str(exc),
-        )
-        db.session.commit()
-        return jsonify({"error": {"code": "sync_failed", "message": f"问答同步失败：{exc}"}}), 500
 
 
 @qa_bp.post("/ask")

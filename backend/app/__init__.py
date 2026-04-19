@@ -3,24 +3,11 @@ from sqlalchemy import inspect, text
 
 from .config import Config
 from .extensions import cors, db, jwt
-from .models import (
-    KnowledgeDoc,
-    PatrolEvent,
-    PatrolPoint,
-    PatrolTask,
-    PlantIdentification,
-    QAMessage,
-    QASession,
-    SyncAuditLog,
-    SyncCheckpoint,
-    User,
-)
+from .models import KnowledgeDoc, PlantIdentification, QAMessage, QASession, User
 from .routes.auth import INTERNAL_USERS, auth_bp
 from .routes.health import health_bp
 from .routes.identify import identify_bp
-from .routes.patrol import patrol_bp
 from .routes.qa import qa_bp
-from .routes.sync import sync_bp
 
 
 def create_app() -> Flask:
@@ -38,9 +25,7 @@ def create_app() -> Flask:
     app.register_blueprint(health_bp, url_prefix="/api")
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
     app.register_blueprint(identify_bp, url_prefix="/api/identify")
-    app.register_blueprint(patrol_bp, url_prefix="/api/patrol")
     app.register_blueprint(qa_bp, url_prefix="/api/qa")
-    app.register_blueprint(sync_bp, url_prefix="/api/sync")
 
     with app.app_context():
         from . import models  # noqa: F401
@@ -66,10 +51,6 @@ def _ensure_sqlite_extra_schema() -> None:
             statements.append("ALTER TABLE plant_identifications ADD COLUMN scene_type VARCHAR(32)")
         if "risk_level" not in columns:
             statements.append("ALTER TABLE plant_identifications ADD COLUMN risk_level VARCHAR(16)")
-    if insp.has_table("patrol_events"):
-        columns = {col["name"] for col in insp.get_columns("patrol_events")}
-        if "photo_base64" not in columns:
-            statements.append("ALTER TABLE patrol_events ADD COLUMN photo_base64 TEXT")
     if not statements:
         return
     with bind.begin() as conn:
@@ -100,10 +81,10 @@ def _seed_knowledge_docs() -> None:
             content="优先记录虫口密度和受害面积，结合诱捕器和人工巡查，按技术规程处置。",
         ),
         KnowledgeDoc(
-            title="巡护轨迹与异常点上报要点",
-            category="patrol",
-            keywords=["巡护", "轨迹", "异常", "上报"],
-            content="轨迹记录应覆盖关键区域，异常点需包含坐标、分类、描述和现场照片。",
+            title="野外作业安全与记录要点",
+            category="field",
+            keywords=["作业", "安全", "记录", "上报"],
+            content="作业前评估风险，关键步骤留痕，异常及时上报。",
         ),
     ]
     db.session.add_all(seeds)
@@ -112,13 +93,8 @@ def _seed_knowledge_docs() -> None:
 
 def _purge_user_related_data() -> None:
     """删除依赖 users 的业务数据（顺序满足外键）。"""
-    SyncAuditLog.query.delete()
-    SyncCheckpoint.query.delete()
     QAMessage.query.delete()
     QASession.query.delete()
-    PatrolPoint.query.delete()
-    PatrolEvent.query.delete()
-    PatrolTask.query.delete()
     PlantIdentification.query.delete()
     User.query.delete()
     db.session.commit()

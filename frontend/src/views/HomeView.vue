@@ -1,76 +1,27 @@
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, ref } from "vue";
+import { storeToRefs } from "pinia";
 import { useRouter } from "vue-router";
-import { showFailToast, showSuccessToast } from "vant";
-
-import apiClient, { QA_ASK_TIMEOUT_MS } from "../api/client";
-import { postWithSyncRetry } from "../utils/syncRetry";
+import { showToast } from "vant";
 import { useAuthStore } from "../stores/auth";
-import { clearStore, deleteRecord, getAllRecords, putRecord, stores } from "../services/offlineDb";
-import { getSyncMeta, setSyncMeta } from "../services/syncMeta";
+import { useNetworkStore } from "../stores/network";
 
 const authStore = useAuthStore();
+const networkStore = useNetworkStore();
+const { simulateOffline, effectiveOnline } = storeToRefs(networkStore);
 const router = useRouter();
-const online = ref(navigator.onLine);
-/** 默认收起「其他」区块，主流程只保留三入口 */
+
+/** 默认收起「其他」区块 */
 const moreActive = ref([]);
 
 const username = computed(() => authStore.user?.username || "用户");
-const pending = ref({ qa: 0, patrol: 0 });
-const syncOverview = ref({
-  qa: getSyncMeta("qa"),
-  patrol: getSyncMeta("patrol"),
-});
-const retryingAll = ref(false);
-const retryReport = ref([]);
-const pwaInstallReady = ref(false);
-const pwaInstalled = ref(false);
-const pwaStatusText = ref("未检测");
-const pwaUpdateReady = ref(false);
-const pwaUpdateRegistration = ref(null);
-let deferredInstallPrompt = null;
-const topPendingModule = computed(() => {
-  const entries = [
-    { key: "qa", count: pending.value.qa },
-    { key: "patrol", count: pending.value.patrol },
-  ].sort((a, b) => b.count - a.count);
-  return entries[0];
-});
-const moduleHealth = computed(() => {
-  const specs = [
-    { key: "qa", label: "问答" },
-    { key: "patrol", label: "巡护" },
-  ];
-  return specs.map((item) => {
-    const pendingCount = pending.value[item.key] || 0;
-    const lastError = syncOverview.value[item.key]?.lastError || "";
-    if (lastError) {
-      return { ...item, level: "error", text: "失败", hint: lastError };
-    }
-    if (pendingCount > 0) {
-      return { ...item, level: "warning", text: "待同步", hint: `待同步 ${pendingCount} 条` };
-    }
-    return { ...item, level: "ok", text: "正常", hint: "无待同步数据" };
-  });
-});
 
-async function refreshPending() {
-  pending.value.qa =
-    (await getAllRecords(stores.qaSessions)).length +
-    (await getAllRecords(stores.qaMessages)).length +
-    (await getAllRecords(stores.qaPendingQuestions)).length;
-  pending.value.patrol =
-    (await getAllRecords(stores.patrolTasks)).length +
-    (await getAllRecords(stores.patrolPoints)).length +
-    (await getAllRecords(stores.patrolEvents)).length;
-}
-
-function refreshSyncOverview() {
-  syncOverview.value = {
-    qa: getSyncMeta("qa"),
-    patrol: getSyncMeta("patrol"),
-  };
-}
+const networkHint = computed(() => {
+  if (simulateOffline.value) {
+    return "模拟断网中（本应用内视为离线，用于测试）";
+  }
+  return effectiveOnline.value ? "当前网络：在线" : "当前网络：离线";
+});
 
 function goQa() {
   router.push({ name: "qa" });
@@ -81,176 +32,7 @@ function goIdentify() {
 }
 
 function goPatrol() {
-  router.push({ name: "patrol" });
-}
-
-function goSyncAudits() {
-  router.push({ name: "syncAudits" });
-}
-
-function goTopPendingModule() {
-  const target = topPendingModule.value;
-  if (!target || target.count <= 0) return;
-  if (target.key === "qa") goQa();
-  if (target.key === "patrol") goPatrol();
-}
-
-function toStatusText(status) {
-  if (status === "success") return "成功";
-  if (status === "failed") return "失败";
-  return "跳过";
-}
-
-function buildFailureSuggestion(module) {
-  if (module === "问答") return "建议：检查网络、DeepSeek Key 与账户余额后重试。";
-  if (module === "巡护") return "建议：检查网络、登录状态与定位权限后重试。";
-  return "建议：检查网络与配置后重试。";
-}
-
-function buildFailedDetail(module, message) {
-  const base = message || "同步失败";
-  return `${base} ${buildFailureSuggestion(module)}`;
-}
-
-function detectPwaInstalled() {
-  const standalone = window.matchMedia?.("(display-mode: standalone)")?.matches;
-  const iosStandalone = window.navigator.standalone === true;
-  pwaInstalled.value = Boolean(standalone || iosStandalone);
-  pwaStatusText.value = pwaInstalled.value ? "已添加到主屏幕" : "未添加到主屏幕";
-}
-
-async function triggerPwaInstall() {
-  if (!deferredInstallPrompt) {
-    showFailToast("当前浏览器未提供安装弹窗，请使用“添加到主屏幕”手动安装");
-    return;
-  }
-  deferredInstallPrompt.prompt();
-  const choice = await deferredInstallPrompt.userChoice;
-  deferredInstallPrompt = null;
-  pwaInstallReady.value = false;
-  if (choice?.outcome === "accepted") {
-    showSuccessToast("已触发安装，请按提示完成");
-  }
-}
-
-function onPwaUpdateReady(event) {
-  pwaUpdateReady.value = true;
-  pwaUpdateRegistration.value = event?.detail?.registration || null;
-}
-
-function applyPwaUpdateNow() {
-  const reg = pwaUpdateRegistration.value;
-  const waiting = reg?.waiting;
-  if (!waiting) {
-    showFailToast("暂未检测到可更新版本");
-    return;
-  }
-  waiting.postMessage({ type: "SKIP_WAITING" });
-  navigator.serviceWorker.addEventListener("controllerchange", () => {
-    window.location.reload();
-  }, { once: true });
-}
-
-async function retryQa() {
-  const sessions = await getAllRecords(stores.qaSessions);
-  const messages = await getAllRecords(stores.qaMessages);
-  const pendingQuestions = await getAllRecords(stores.qaPendingQuestions);
-  if (!sessions.length && !messages.length && !pendingQuestions.length) {
-    return { module: "问答", status: "skipped", detail: "无待同步数据" };
-  }
-  if (sessions.length || messages.length) {
-    await postWithSyncRetry(apiClient, "/qa/sync", { sessions, messages });
-    await clearStore(stores.qaSessions);
-    await clearStore(stores.qaMessages);
-  }
-  let answered = 0;
-  for (const item of pendingQuestions) {
-    const question = (item?.question || "").trim();
-    if (!question) {
-      await deleteRecord(stores.qaPendingQuestions, item.local_id);
-      continue;
-    }
-    const { data } = await apiClient.post("/qa/ask", { question }, { timeout: QA_ASK_TIMEOUT_MS });
-    const sessionLocalId = `qa_session_online_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
-    await putRecord(stores.qaSessions, {
-      local_id: sessionLocalId,
-      title: question.slice(0, 24),
-      created_at: new Date().toISOString(),
-    });
-    await putRecord(stores.qaMessages, {
-      local_id: `qa_msg_user_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
-      session_local_id: sessionLocalId,
-      role: "user",
-      content: question,
-      citations: [],
-    });
-    await putRecord(stores.qaMessages, {
-      local_id: `qa_msg_assistant_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
-      session_local_id: sessionLocalId,
-      role: "assistant",
-      content: data.answer || "",
-      citations: data.citations || [],
-    });
-    await deleteRecord(stores.qaPendingQuestions, item.local_id);
-    answered += 1;
-  }
-  setSyncMeta("qa", { lastSuccessAt: new Date().toISOString(), lastError: "" });
-  return {
-    module: "问答",
-    status: "success",
-    detail: `已同步 ${sessions.length + messages.length} 条，补答 ${answered} 条`,
-  };
-}
-
-async function retryPatrol() {
-  const tasks = await getAllRecords(stores.patrolTasks);
-  const points = await getAllRecords(stores.patrolPoints);
-  const events = await getAllRecords(stores.patrolEvents);
-  const total = tasks.length + points.length + events.length;
-  if (!total) return { module: "巡护", status: "skipped", detail: "无待同步数据" };
-  await postWithSyncRetry(apiClient, "/patrol/sync", { tasks, points, events });
-  await clearStore(stores.patrolTasks);
-  await clearStore(stores.patrolPoints);
-  await clearStore(stores.patrolEvents);
-  setSyncMeta("patrol", { lastSuccessAt: new Date().toISOString(), lastError: "" });
-  return { module: "巡护", status: "success", detail: `已同步 ${total} 条` };
-}
-
-async function retryAllSync() {
-  if (!navigator.onLine) {
-    showFailToast("当前离线，无法执行全部重试");
-    return;
-  }
-  retryingAll.value = true;
-  retryReport.value = [];
-  const results = [];
-  const tasks = [
-    { key: "qa", label: "问答", run: retryQa },
-    { key: "patrol", label: "巡护", run: retryPatrol },
-  ];
-  for (const item of tasks) {
-    try {
-      const result = await item.run();
-      results.push(result);
-    } catch (error) {
-      const message = error?.response?.data?.error?.message || "同步失败";
-      setSyncMeta(item.key, { lastError: message });
-      results.push({
-        module: item.label,
-        status: "failed",
-        detail: buildFailedDetail(item.label, message),
-      });
-    }
-  }
-  retryReport.value = results;
-  await refreshPending();
-  refreshSyncOverview();
-  if (results.some((item) => item.status === "failed")) {
-    showFailToast("全部重试已完成：存在失败项");
-  } else {
-    showSuccessToast("全部重试已完成");
-  }
-  retryingAll.value = false;
+  showToast({ message: "正在开发中", position: "middle" });
 }
 
 function logout() {
@@ -258,29 +40,13 @@ function logout() {
   router.push({ name: "login" });
 }
 
-onMounted(refreshPending);
-onMounted(refreshSyncOverview);
-onMounted(() => {
-  detectPwaInstalled();
-  window.addEventListener("beforeinstallprompt", (event) => {
-    event.preventDefault();
-    deferredInstallPrompt = event;
-    pwaInstallReady.value = true;
+function onSimulateOfflineChange(checked) {
+  networkStore.setSimulateOffline(checked);
+  showToast({
+    message: checked ? "已开启模拟断网" : "已恢复为真实网络状态",
+    position: "bottom",
   });
-  window.addEventListener("appinstalled", () => {
-    pwaInstalled.value = true;
-    pwaInstallReady.value = false;
-    pwaStatusText.value = "已添加到主屏幕";
-    showSuccessToast("PWA 安装完成");
-  });
-  window.addEventListener("pwa-update-ready", onPwaUpdateReady);
-  window.addEventListener("online", () => {
-    online.value = true;
-  });
-  window.addEventListener("offline", () => {
-    online.value = false;
-  });
-});
+}
 </script>
 
 <template>
@@ -308,68 +74,20 @@ onMounted(() => {
       <van-collapse v-model="moreActive" :border="false" class="more-collapse">
         <van-collapse-item title="其他、等等" name="more" class="more-item">
           <div class="more-inner">
-            <p class="more-line">
-              待同步：问答 {{ pending.qa }}，巡护 {{ pending.patrol }}
-            </p>
-            <div class="pwa-tip">
-              <p class="pwa-title">离线优先：建议添加到主屏幕</p>
-              <p>PWA：{{ pwaStatusText }}</p>
-              <van-button v-if="pwaInstallReady" type="primary" size="small" block @click="triggerPwaInstall">
-                一键安装到主屏幕
-              </van-button>
-              <van-button v-else-if="!pwaInstalled" type="default" plain size="small" block>
-                若无安装按钮，请在浏览器菜单中选择「添加到主屏幕」
-              </van-button>
-              <van-button v-if="pwaUpdateReady" type="warning" size="small" block @click="applyPwaUpdateNow">
-                检测到新版本，立即更新
-              </van-button>
-            </div>
-            <p class="more-line muted">
-              最近同步 · 问答 {{ syncOverview.qa.lastSuccessAt || "暂无" }}；巡护
-              {{ syncOverview.patrol.lastSuccessAt || "暂无" }}
-            </p>
-            <div class="health-list">
-              <p class="health-title">模块状态</p>
-              <div v-for="item in moduleHealth" :key="item.key" class="health-item">
-                <span class="health-left">
-                  <span class="health-dot" :class="`is-${item.level}`" />
-                  <span>{{ item.label }}：{{ item.text }}</span>
-                </span>
-                <span class="health-hint">{{ item.hint }}</span>
-              </div>
-            </div>
-            <div class="more-actions">
-              <van-button type="default" plain size="small" block @click="refreshPending(); refreshSyncOverview()">
-                刷新同步状态
-              </van-button>
-              <van-button type="primary" size="small" block :loading="retryingAll" @click="retryAllSync">
-                全部重试同步
-              </van-button>
-              <van-button
-                type="default"
-                size="small"
-                block
-                :disabled="!topPendingModule || topPendingModule.count <= 0"
-                @click="goTopPendingModule"
-              >
-                前往待同步最多模块
-              </van-button>
-              <van-button type="default" size="small" block @click="goSyncAudits">查看同步审计</van-button>
-            </div>
-            <div v-if="retryReport.length" class="retry-report">
-              <h4>全部重试结果</h4>
-              <van-cell
-                v-for="(item, idx) in retryReport"
-                :key="`${item.module}_${idx}`"
-                :title="`${item.module}：${toStatusText(item.status)}`"
-                :label="item.detail"
-              />
-            </div>
+            <p class="more-line muted">{{ networkHint }}</p>
+            <van-cell center title="断网测试" label="开启后在本应用内模拟离线，不影响系统其它应用">
+              <template #right-icon>
+                <van-switch
+                  :model-value="simulateOffline"
+                  size="20px"
+                  @update:model-value="onSimulateOfflineChange"
+                />
+              </template>
+            </van-cell>
+            <van-button class="more-logout" type="danger" block round @click="logout">退出登录</van-button>
           </div>
         </van-collapse-item>
       </van-collapse>
-
-      <van-button class="logout-btn" type="danger" block round @click="logout">退出登录</van-button>
     </div>
   </div>
 </template>
@@ -465,7 +183,6 @@ onMounted(() => {
 .more-line {
   margin: 0;
   font-size: 13px;
-  color: #323233;
   line-height: 1.5;
 }
 
@@ -474,89 +191,12 @@ onMounted(() => {
   font-size: 12px;
 }
 
-.more-actions {
-  display: grid;
-  gap: 8px;
+.more-inner :deep(.van-cell) {
+  padding-left: 0;
+  padding-right: 0;
 }
 
-.logout-btn {
+.more-logout {
   margin-top: 4px;
-}
-
-.pwa-tip {
-  border: 1px solid #d5f5e3;
-  background: #f4fff8;
-  border-radius: 8px;
-  padding: 10px;
-  display: grid;
-  gap: 8px;
-}
-
-.pwa-title {
-  margin: 0;
-  font-weight: 600;
-  color: #07c160;
-}
-
-.retry-report {
-  border: 1px solid #f2f3f5;
-  border-radius: 8px;
-  padding: 8px;
-}
-
-.retry-report h4 {
-  margin: 0 0 8px 0;
-  font-size: 14px;
-}
-
-.health-list {
-  border: 1px solid #f2f3f5;
-  border-radius: 8px;
-  padding: 8px;
-  display: grid;
-  gap: 6px;
-}
-
-.health-title {
-  margin: 0 0 4px 0;
-  font-weight: 600;
-  font-size: 13px;
-}
-
-.health-item {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  font-size: 12px;
-}
-
-.health-left {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.health-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  display: inline-block;
-}
-
-.health-dot.is-ok {
-  background: #07c160;
-}
-
-.health-dot.is-warning {
-  background: #ff976a;
-}
-
-.health-dot.is-error {
-  background: #ee0a24;
-}
-
-.health-hint {
-  color: #969799;
-  text-align: right;
 }
 </style>

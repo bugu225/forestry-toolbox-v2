@@ -1,16 +1,18 @@
 <script setup>
 import { computed, nextTick, onMounted, reactive, ref } from "vue";
+import { storeToRefs } from "pinia";
 import { showFailToast, showSuccessToast } from "vant";
 import apiClient from "../api/client";
 import { useAuthStore } from "../stores/auth";
+import { useNetworkStore } from "../stores/network";
 import { deleteRecord, getAllRecords, getRecord, putRecord, stores } from "../services/offlineDb";
 
 const authStore = useAuthStore();
+const networkStore = useNetworkStore();
+const { effectiveOnline: online } = storeToRefs(networkStore);
 
 /** 识图走同步接口，百度双通道可能较慢 */
 const IDENTIFY_SYNC_TIMEOUT_MS = 60000;
-
-const online = ref(navigator.onLine);
 /** 中部对话：user 含 image；assistant 含 text / pending */
 const chatMessages = ref([]);
 const chatScrollRef = ref(null);
@@ -792,12 +794,8 @@ async function removeGalleryPhoto(row) {
 
 onMounted(async () => {
   await refreshGallery();
-  window.addEventListener("online", () => {
-    online.value = true;
-  });
-  window.addEventListener("offline", () => {
-    online.value = false;
-  });
+  window.addEventListener("online", () => networkStore.setNavigatorOnline(true));
+  window.addEventListener("offline", () => networkStore.setNavigatorOnline(false));
 });
 </script>
 

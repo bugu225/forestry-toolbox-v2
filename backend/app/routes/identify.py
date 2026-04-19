@@ -1,11 +1,8 @@
-import hashlib
-import json
-
 from flask import Blueprint, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 
 from ..extensions import db
-from ..models import PlantIdentification, SyncAuditLog, SyncCheckpoint
+from ..models import PlantIdentification
 from ..services.llm_provider import brief_species_intro_zh
 from ..services.plant_provider import identify_plant
 
@@ -67,36 +64,6 @@ def _build_risk_level(scene_type: str, confidence: float) -> str:
     return "low"
 
 
-def _jobs_for_hash(jobs: list[dict]):
-    normalized = []
-    for item in jobs:
-        normalized.append(
-            {
-                "local_id": item.get("local_id") or "",
-                "image_name": item.get("image_name") or "",
-                "image_base64": item.get("image_base64") or "",
-                "scene_type": item.get("scene_type") or "general",
-                "result_json": item.get("result_json") or [],
-                "created_at": item.get("created_at") or "",
-            }
-        )
-    normalized.sort(key=lambda x: (x["local_id"], x["image_name"], x["created_at"]))
-    return normalized
-
-
-def _append_sync_audit(*, user_id: int, status: str, deduplicated: bool, summary: dict, error_message: str = ""):
-    db.session.add(
-        SyncAuditLog(
-            user_id=user_id,
-            module="identify",
-            status=status,
-            deduplicated=deduplicated,
-            summary_json=summary,
-            error_message=error_message[:500] if error_message else None,
-        )
-    )
-
-
 @identify_bp.get("/history")
 @jwt_required()
 def history():
@@ -127,34 +94,11 @@ def history():
 @identify_bp.post("/sync")
 @jwt_required()
 def sync_identify():
+    """识图主接口：提交任务并返回识别结果（路径名沿用 /sync，避免前端大规模改动）。"""
     identity = int(get_jwt_identity())
     try:
         payload = request.get_json(silent=True) or {}
         jobs = payload.get("jobs") or []
-        dedup_payload = {"jobs": _jobs_for_hash(jobs)}
-        payload_raw = json.dumps(dedup_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-        payload_hash = hashlib.sha256(payload_raw.encode("utf-8")).hexdigest()
-        checkpoint = SyncCheckpoint.query.filter_by(
-            user_id=identity, module="identify", payload_hash=payload_hash
-        ).first()
-        if checkpoint:
-            cached = checkpoint.response_json or {}
-            summary = {"inserted": cached.get("inserted", 0)}
-            _append_sync_audit(
-                user_id=identity,
-                status="success",
-                deduplicated=True,
-                summary=summary,
-            )
-            db.session.commit()
-            return jsonify(
-                {
-                    "ok": True,
-                    "deduplicated": True,
-                    "inserted": cached.get("inserted", 0),
-                    "synced_items": cached.get("synced_items", []),
-                }
-            )
 
         inserted = 0
         synced_items = []
@@ -221,31 +165,8 @@ def sync_identify():
                 }
             )
 
-        response_payload = {"inserted": inserted, "synced_items": synced_items}
-        db.session.add(
-            SyncCheckpoint(
-                user_id=identity,
-                module="identify",
-                payload_hash=payload_hash,
-                response_json=response_payload,
-            )
-        )
-        _append_sync_audit(
-            user_id=identity,
-            status="success",
-            deduplicated=False,
-            summary={"inserted": inserted},
-        )
         db.session.commit()
-        return jsonify({"ok": True, "deduplicated": False, **response_payload})
+        return jsonify({"ok": True, "deduplicated": False, "inserted": inserted, "synced_items": synced_items})
     except Exception as exc:  # noqa: BLE001
         db.session.rollback()
-        _append_sync_audit(
-            user_id=identity,
-            status="failed",
-            deduplicated=False,
-            summary={},
-            error_message=str(exc),
-        )
-        db.session.commit()
-        return jsonify({"error": {"code": "sync_failed", "message": f"识图同步失败：{exc}"}}), 500
+        return jsonify({"error": {"code": "identify_failed", "message": f"识图失败：{exc}"}}), 500
