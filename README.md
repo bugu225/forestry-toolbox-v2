@@ -1,92 +1,85 @@
 # 林业百宝箱 v2
 
-本项目用于中国大学生计算机设计大赛 Web 应用与开发赛道，采用“离线优先 + 联网增强”的实现策略。
+面向中国大学生计算机设计大赛 **Web 应用与开发** 赛道的林业工具站点：在**本机离线能力**（IndexedDB 存问答会话、知识条目、识图图集等）与**联网能力**（鉴权、LLM 问答、云端识图）之间取得平衡。
 
-## 当前完成度（功能视角）
+当前版本已**收敛为两大核心功能**（林业知识问答、林业识图），并保留首页「巡护助手」**占位入口**（点击提示「正在开发中」）。**已不再提供**服务端巡护接口、批量「同步上传」与同步审计等旧能力。
 
-- 用户登录鉴权（JWT）
-- 三大核心模块：识图、问答、巡护
-- 本地离线存储（IndexedDB）
-- 联网同步与失败提示
-- 同步幂等去重（避免重复入库）
-- 同步审计（查询、筛选、清理）
-- 网络恢复后自动触发同步（识图/问答/巡护）
+## 功能概览
+
+| 模块 | 说明 |
+|------|------|
+| 登录与鉴权 | JWT，`/api/auth/login` 等 |
+| 林业知识问答 | 联网调用 LLM；本地 IndexedDB 保存会话与消息；知识库资料可导入（含 PDF 文本提取） |
+| 林业识图 | 拍照/相册、图集、调用 `/api/identify/sync` 做识别（路径名沿用 `sync`，实为识图主接口） |
+| 首页「其他、等等」 | 退出登录；**断网测试**开关（应用内模拟离线，便于测离线逻辑，不改变系统网络） |
+| 巡护助手 | 仅占位，无后端模块 |
 
 ## 技术栈
 
 - 前端：`Vue 3` + `Vite` + `Pinia` + `Vue Router` + `Vant`
 - 后端：`Flask` + `Flask-JWT-Extended` + `Flask-SQLAlchemy`
-- 数据库：`SQLite`
-- 本地离线：`IndexedDB`
+- 服务端数据库：默认 `SQLite`（见 `backend` 配置）
+- 浏览器本地：`IndexedDB`（`frontend/src/services/offlineDb.js`，当前库版本见文件内 `DB_VERSION`）
 
 ## 目录结构
 
-- `frontend/`：前端工程
-- `backend/`：后端工程
-- `docs/`：项目文档
+- `frontend/`：前端工程（生产构建输出在 `frontend/dist`）
+- `backend/`：Flask 后端
+- `docs/`：补充文档（若有）
 
 ## 环境变量
 
-项目根目录使用 `.env.local`，后端与前端都会读取：
+可在项目根目录或各子项目旁使用 `.env.local` / `.env.production` 等，具体键名以 `.env.example` 为准。
 
-- 后端关键项：`PLANT_API_KEY`、`PLANT_API_SECRET`、`LLM_API_KEY`
-- 前端关键项：`VITE_API_BASE`、`VITE_AMAP_JS_KEY`、`VITE_AMAP_SECURITY_JS_CODE`
-
-可参考 `.env.example` 填写。
+- **后端常用**：`PLANT_API_KEY`、`PLANT_API_SECRET`（识图通道）、`LLM_API_KEY`、`CORS_ORIGINS` 等
+- **前端常用**：`VITE_API_BASE`（生产环境必须指向你的后端 `/api` 根，如 `https://域名/api`）；若使用高德相关能力：`VITE_AMAP_JS_KEY`、`VITE_AMAP_SECURITY_JS_CODE`
 
 ## 本地启动（Windows / PowerShell）
 
-### 1) 启动后端
+### 1）后端
 
 ```powershell
-cd d:\ITproject\cursor\forestry-toolbox-v2\backend
+cd path\to\forestry-toolbox-v2\backend
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 python .\run.py
 ```
 
-健康检查：`http://localhost:5000/api/health`（若启用 HTTPS 则 `https://localhost:5000/api/health`）
+健康检查：`http://localhost:5000/api/health`（若启用 HTTPS 则改为 `https://...`）
 
-### 2) 启动前端
+### 2）前端开发
 
 ```powershell
-cd d:\ITproject\cursor\forestry-toolbox-v2\frontend
+cd path\to\forestry-toolbox-v2\frontend
 npm install
 npm run dev
 ```
 
-访问地址：`http://localhost:5173`（若启用 HTTPS 则 `https://localhost:5173`）
+默认：`http://localhost:5173`。开发时请在环境变量中将 `VITE_API_BASE` 指到 `http://localhost:5000/api`（或通过 Vite 代理，以你本地配置为准）。
 
-### 3) 真机联调（手机访问）
+### 3）真机联调（同 Wi-Fi）
 
-确保电脑与手机在同一 Wi-Fi，下方示例以 `192.168.148.78` 为电脑局域网 IP：
+将后端监听 `0.0.0.0:5000`、前端 dev 监听 `0.0.0.0:5173`，并把本机局域网 IP 写入 `VITE_API_BASE` 与后端 `CORS_ORIGINS`，手机浏览器访问 `http://<电脑IP>:5173`。防火墙放行对应端口。
 
-- 后端已监听 `0.0.0.0:5000`
-- 前端 Vite 已监听 `0.0.0.0:5173`
-- `.env.local` 中：
-  - `VITE_API_BASE=http://192.168.148.78:5000/api`
-  - `CORS_ORIGINS` 包含 `http://192.168.148.78:5173`
+### 4）生产构建（部署前）
 
-手机浏览器访问：`http://192.168.148.78:5173`
+```bash
+cd frontend
+npm ci
+npm run build
+```
 
-若无法访问，请在 Windows 防火墙放行入站 TCP 端口 `5000`、`5173`（专用网络）。
+**务必在构建前**设置好生产用 `VITE_API_BASE`，否则打包后的前端可能仍指向错误 API 地址。
 
-### 4) HTTPS 真机联调
+## 部署提示（服务器）
 
-根目录 `.env.local` 已支持：
+1. `git pull` 或使用 tag（如 `release-2026-04-19`）检出对应版本。  
+2. 后端：虚拟环境内 `pip install -r requirements.txt`，配置环境变量后重启进程。  
+3. 前端：`npm ci && npm run build`，用 Nginx 等托管 `frontend/dist`。  
+4. 旧版本若曾带巡护/同步审计等表，升级后 SQLite 中可能残留**未再使用的表**，一般不影响运行；若需「干净库」请在**备份后**自行处理数据文件。
 
-- `VITE_USE_HTTPS=1`
-- `FLASK_USE_HTTPS=1`
-
-默认会使用开发证书（adhoc/self-signed）。若你有固定证书，可配置：
-
-- `VITE_SSL_CERT`、`VITE_SSL_KEY`
-- `FLASK_SSL_CERT`、`FLASK_SSL_KEY`
-
-注意：手机端需信任证书，否则 HTTPS 请求会被拦截。
-
-## 核心 API（当前版本）
+## 核心 API（与当前代码一致）
 
 ### 通用与鉴权
 
@@ -95,35 +88,23 @@ npm run dev
 - `POST /api/auth/login`
 - `GET /api/auth/me`
 
-### 识图模块
+### 识图
 
-- `POST /api/identify/sync`
-- `GET /api/identify/history`（含 `scene_type`、`risk_level`，旧数据缺省为 `general` / `low`）
+- `POST /api/identify/sync`：提交识图任务并返回结果（响应中含 `synced_items` 等字段）
+- `GET /api/identify/history`
 
-### 问答模块
+### 问答
 
 - `POST /api/qa/ask`
-- `POST /api/qa/sync`
-- `GET /api/qa/knowledge-search`（林业知识速查；`/api/qa/policy-search` 仍兼容）
-- `GET /api/qa/knowledge-docs`（离线资料库下载）
 - `GET /api/qa/sessions`
 - `GET /api/qa/sessions/<session_id>/messages`
+- `GET /api/qa/knowledge-search`（与 `GET /api/qa/policy-search` 同一处理）
+- `GET /api/qa/knowledge-docs`
+- `POST /api/qa/knowledge-import`：联网整理用户粘贴/上传的正文，返回结构化条目供前端写入 IndexedDB
 
-### 巡护模块
+**已移除**：`POST /api/qa/sync`、巡护相关 API、同步审计 API。
 
-- `POST /api/patrol/sync`
-- `GET /api/patrol/tasks`
-- `GET /api/patrol/events`
+## 离线与「断网测试」
 
-### 同步审计
-
-- `GET /api/sync/audits`
-- `DELETE /api/sync/audits`
-
-## 同步机制说明（简版）
-
-- 前端离线数据先写入 IndexedDB
-- 联网时可手动同步，也可在网络恢复时自动同步
-- 后端对同步 payload 做哈希去重，避免重传重复写入
-- 每次同步写入审计日志，可按模块/状态/去重命中筛选
-
+- 问答/识图界面根据 **有效在线状态** 决定是否走联网请求：由 Pinia `stores/network.js` 合并 **浏览器 `online`/`offline` 事件** 与首页 **模拟断网** 开关。  
+- 模拟断网仅影响本应用内逻辑，**不会**断开系统网络；若需完全阻断 HTTP，需另行在请求层拦截（未默认内置）。
