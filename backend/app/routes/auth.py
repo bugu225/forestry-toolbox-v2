@@ -6,9 +6,11 @@ from ..models import User
 
 auth_bp = Blueprint("auth", __name__)
 
-# 开发测试：仅允许内部固定账号登录（与前端说明一致）
-INTERNAL_USERNAME = "linye"
-INTERNAL_PASSWORD = "12345678"
+# 开发测试：仅允许下列内部账号登录（用户名 -> 密码）
+INTERNAL_USERS = {
+    "linye": "12345678",
+    "杨布谷": "12345678",
+}
 
 
 def _error(message: str, code: str = "bad_request", status_code: int = 422):
@@ -54,17 +56,18 @@ def login():
     username = (data.get("username") or "").strip()
     password = data.get("password") or ""
 
-    if username != INTERNAL_USERNAME or password != INTERNAL_PASSWORD:
+    expected_password = INTERNAL_USERS.get(username)
+    if expected_password is None or password != expected_password:
         return _error("仅支持内部账号登录，请核对账号与密码", code="invalid_credentials", status_code=401)
 
-    user = User.query.filter_by(username=INTERNAL_USERNAME).first()
+    user = User.query.filter_by(username=username).first()
     if not user:
-        user = User(username=INTERNAL_USERNAME)
-        user.set_password(INTERNAL_PASSWORD)
+        user = User(username=username, role="admin")
+        user.set_password(expected_password)
         db.session.add(user)
         db.session.commit()
-    elif not user.check_password(INTERNAL_PASSWORD):
-        user.set_password(INTERNAL_PASSWORD)
+    elif not user.check_password(expected_password):
+        user.set_password(expected_password)
         db.session.commit()
 
     token = create_access_token(identity=str(user.id))

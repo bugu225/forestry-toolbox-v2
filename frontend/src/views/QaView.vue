@@ -23,16 +23,38 @@ const cloudMessages = ref([]);
 const selectedCloudSessionId = ref(null);
 const syncMeta = ref(getSyncMeta("qa"));
 const autoSyncHintShown = ref(false);
-const policyKeyword = ref("");
-const policyResults = ref([]);
-const localKnowledgeDocs = ref([]);
-const localKnowledgeResults = ref([]);
 const pendingQuestions = ref([]);
 const pendingAnswerReport = ref([]);
 const listening = ref(false);
 const speechSupported = ref(false);
 const speaking = ref(false);
 let speechRecognizer = null;
+
+/** 与后端 FORESTRY_KNOWLEDGE_CATEGORIES 顺序一致，用于分组展示 */
+const KNOWLEDGE_CATEGORY_ORDER = [
+  "森林防火",
+  "林木病虫害",
+  "造林抚育",
+  "林地与采伐",
+  "生态巡护",
+  "野生动植物保护",
+  "政策法规与执法",
+  "机具与作业安全",
+  "油茶与经济林",
+  "生态修复",
+  "其他",
+];
+
+const userKnowledgeEntries = ref([]);
+const knowledgeImportDraft = ref("");
+const knowledgeImportFileName = ref("");
+const knowledgeSearch = ref("");
+const knowledgeImportBusy = ref(false);
+const knowledgePopupVisible = ref(false);
+const knowledgeDetailRow = ref(null);
+const knowledgeFileInput = ref(null);
+/** 资料导入区默认收起，减少占用；需要导入时再展开 */
+const knowledgeImportExpanded = ref(false);
 
 /** 当前聊天会话（本地 local_id）；新建对话时为 null */
 const activeChatSessionLocalId = ref(null);
@@ -47,9 +69,12 @@ watch(online, (isOnline) => {
   }
 });
 
-function setActiveModule(module) {
+async function setActiveModule(module) {
   if (module === "qa" && !online.value) return;
   activeModule.value = module;
+  if (module === "knowledge") {
+    await refreshLocal();
+  }
 }
 
 const chatMessages = computed(() => {
@@ -217,8 +242,166 @@ function localAnswer(question) {
 async function refreshLocal() {
   sessions.value = await getAllRecords(stores.qaSessions);
   messages.value = await getAllRecords(stores.qaMessages);
-  localKnowledgeDocs.value = await getAllRecords(stores.qaKnowledgeDocs);
   pendingQuestions.value = await getAllRecords(stores.qaPendingQuestions);
+  userKnowledgeEntries.value = await getAllRecords(stores.userKnowledgeEntries);
+}
+
+function knowledgeEntryMatchesSearch(row, kw) {
+  const q = (kw || "").trim();
+  if (!q) return true;
+  const parts = [
+    row.title,
+    row.summary,
+    row.content,
+    row.source_filename,
+    ...(Array.isArray(row.keywords) ? row.keywords : []),
+  ]
+    .map((x) => String(x || ""))
+    .join("\n");
+  return parts.includes(q) || parts.toLowerCase().includes(q.toLowerCase());
+}
+
+const filteredUserKnowledge = computed(() =>
+  userKnowledgeEntries.value.filter((row) => knowledgeEntryMatchesSearch(row, knowledgeSearch.value))
+);
+
+const knowledgeBlocks = computed(() => {
+  const list = filteredUserKnowledge.value.slice().sort((a, b) => {
+    const ta = new Date(a.organized_at || 0).getTime();
+    const tb = new Date(b.organized_at || 0).getTime();
+    return tb - ta;
+  });
+  const byCat = {};
+  for (const row of list) {
+    const c = row.category || "其他";
+    if (!byCat[c]) byCat[c] = [];
+    byCat[c].push(row);
+  }
+  const out = [];
+  for (const c of KNOWLEDGE_CATEGORY_ORDER) {
+    if (byCat[c]?.length) {
+      out.push({ category: c, items: byCat[c] });
+    }
+  }
+  const seen = new Set(KNOWLEDGE_CATEGORY_ORDER);
+  for (const c of Object.keys(byCat).sort()) {
+    if (seen.has(c)) continue;
+    out.push({ category: c, items: byCat[c] });
+  }
+  return out;
+});
+
+async function saveOrganizedKnowledgeItem(apiItem) {
+  const localId = uid("uk_entry");
+  const now = new Date().toISOString();
+  await putRecord(stores.userKnowledgeEntries, {
+    local_id: localId,
+    title: apiItem.title || "未命名",
+    category: apiItem.category || "其他",
+    keywords: Array.isArray(apiItem.keywords) ? apiItem.keywords : [],
+    summary: apiItem.summary || "",
+    content: apiItem.content || "",
+    source_filename: apiItem.source_filename || "",
+    organized_at: now,
+    provider: "deepseek-import",
+  });
+  await refreshLocal();
+}
+
+async function onlineOrganizeAndSave() {
+  if (!online.value) {
+    showFailToast("请先联网后再导入整理");
+    return;
+  }
+  const text = (knowledgeImportDraft.value || "").trim();
+  if (!text) {
+    showFailToast("请粘贴资料正文，或选择 .txt / .md / .csv / .pdf 文件");
+    return;
+  }
+  knowledgeImportBusy.value = true;
+  try {
+    const { data } = await apiClient.post(
+      "/qa/knowledge-import",
+      { text, filename: knowledgeImportFileName.value.trim() || undefined },
+      { timeout: QA_ASK_TIMEOUT_MS }
+    );
+    const item = data?.item;
+    if (!item?.title) {
+      throw new Error("返回数据无效");
+    }
+    await saveOrganizedKnowledgeItem(item);
+    knowledgeImportDraft.value = "";
+    knowledgeImportFileName.value = "";
+    showSuccessToast("已整理并保存到本机，离线可继续查看");
+  } catch (error) {
+    showFailToast(error?.response?.data?.error?.message || error?.message || "整理失败");
+  } finally {
+    knowledgeImportBusy.value = false;
+  }
+}
+
+function triggerKnowledgeFilePick() {
+  knowledgeFileInput.value?.click?.();
+}
+
+async function onKnowledgeFileChange(ev) {
+  const file = ev.target.files?.[0];
+  ev.target.value = "";
+  if (!file) return;
+
+  if (/\.pdf$/i.test(file.name)) {
+    knowledgeImportBusy.value = true;
+    try {
+      const { extractTextFromPdfFile } = await import("../utils/pdfText.js");
+      const text = await extractTextFromPdfFile(file);
+      if (!text.trim()) {
+        showFailToast("未能从该 PDF 提取到文字（常见为扫描件或无文本层）");
+        return;
+      }
+      knowledgeImportDraft.value = text;
+      knowledgeImportFileName.value = file.name;
+      showSuccessToast(`已从 ${file.name} 提取文字，可继续编辑后整理保存`);
+    } catch (error) {
+      showFailToast(error?.message || "PDF 解析失败");
+    } finally {
+      knowledgeImportBusy.value = false;
+    }
+    return;
+  }
+
+  if (!/\.(txt|md|csv)$/i.test(file.name)) {
+    showFailToast("请选择 .txt / .md / .csv / .pdf 文件");
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    knowledgeImportDraft.value = String(reader.result || "");
+    knowledgeImportFileName.value = file.name;
+    showSuccessToast(`已载入 ${file.name}`);
+  };
+  reader.onerror = () => showFailToast("文件读取失败");
+  reader.readAsText(file, "UTF-8");
+}
+
+function openKnowledgeDetail(row) {
+  knowledgeDetailRow.value = row;
+  knowledgePopupVisible.value = true;
+}
+
+function closeKnowledgeDetail() {
+  knowledgePopupVisible.value = false;
+  knowledgeDetailRow.value = null;
+}
+
+async function deleteKnowledgeEntry() {
+  const row = knowledgeDetailRow.value;
+  if (!row?.local_id) return;
+  const ok = window.confirm("确定从本机删除这条资料？");
+  if (!ok) return;
+  await deleteRecord(stores.userKnowledgeEntries, row.local_id);
+  closeKnowledgeDetail();
+  await refreshLocal();
+  showSuccessToast("已删除");
 }
 
 async function askOffline() {
@@ -279,18 +462,6 @@ async function saveQuestionForOnline() {
 
 function usePresetQuestion(question) {
   form.question = question;
-}
-
-function askFromPolicy(item) {
-  const title = item?.title || "该知识项";
-  if (!online.value) {
-    policyKeyword.value = title;
-    searchPolicy();
-    showSuccessToast("已用标题关键词查询本地资料");
-    return;
-  }
-  form.question = `请结合“${title}”给我具体操作步骤和注意事项。`;
-  activeModule.value = "qa";
 }
 
 function stopVoiceInput() {
@@ -464,45 +635,6 @@ async function loadCloudMessages(sessionId) {
   }
 }
 
-async function searchPolicy() {
-  const keyword = (policyKeyword.value || "").trim();
-  localKnowledgeResults.value = localKnowledgeDocs.value.filter((item) => {
-    if (!keyword) return true;
-    if ((item?.title || "").includes(keyword)) return true;
-    if ((item?.content || "").includes(keyword)) return true;
-    return (item?.keywords || []).some((kw) => kw && kw.includes(keyword));
-  });
-
-  if (!online.value) {
-    policyResults.value = [];
-    if (!localKnowledgeResults.value.length) {
-      showFailToast("离线模式下未命中本地资料");
-    }
-    return;
-  }
-  try {
-    const suffix = keyword ? `?q=${encodeURIComponent(keyword)}` : "";
-    const { data } = await apiClient.get(`/qa/knowledge-search${suffix}`);
-    policyResults.value = data.items || [];
-  } catch (error) {
-    showFailToast(error?.response?.data?.error?.message || "知识查询失败");
-  }
-}
-
-async function syncKnowledgeDocs() {
-  if (!online.value) return;
-  try {
-    const { data } = await apiClient.get("/qa/knowledge-docs");
-    await clearStore(stores.qaKnowledgeDocs);
-    const docs = data.items || [];
-    for (const doc of docs) {
-      await putRecord(stores.qaKnowledgeDocs, doc);
-    }
-  } catch (_) {
-    // Keep silent, local docs can still work with cached data.
-  }
-}
-
 async function answerPendingQuestionsNow() {
   if (!online.value) {
     showFailToast("当前离线，无法联网补答");
@@ -641,17 +773,15 @@ onMounted(async () => {
   });
   window.addEventListener("offline", () => (online.value = false));
   await refreshLocal();
-  await syncKnowledgeDocs();
   await loadCloudSessions();
-  await searchPolicy();
   const guidedQuestion = (route.query.q || "").toString().trim();
   if (guidedQuestion) {
     if (online.value) {
       form.question = guidedQuestion;
       activeModule.value = "qa";
     } else {
-      policyKeyword.value = guidedQuestion;
-      await searchPolicy();
+      knowledgeSearch.value = guidedQuestion;
+      activeModule.value = "knowledge";
     }
   }
   applyRouteQuery();
@@ -692,9 +822,119 @@ onMounted(async () => {
       </div>
     </div>
 
-    <div v-if="activeModule === 'knowledge'" class="card function-area function-area--blank" aria-label="知识库速查功能区" />
+    <div v-if="activeModule === 'knowledge'" class="card knowledge-panel function-area" aria-label="知识库速查">
+      <div class="knowledge-import-wrap">
+        <button
+          type="button"
+          class="knowledge-import-toggle"
+          :aria-expanded="knowledgeImportExpanded"
+          @click="knowledgeImportExpanded = !knowledgeImportExpanded"
+        >
+          <span class="knowledge-import-toggle-text">
+            <span class="knowledge-import-toggle-title">{{ knowledgeImportExpanded ? "收起资料导入" : "展开资料导入" }}</span>
+            <span v-if="!knowledgeImportExpanded" class="knowledge-import-toggle-sub">{{
+              online ? "文本 / PDF · 联网整理后存本机" : "离线仅可浏览已保存条目"
+            }}</span>
+          </span>
+          <span class="knowledge-import-toggle-chevron" aria-hidden="true">{{ knowledgeImportExpanded ? "▲" : "▼" }}</span>
+        </button>
 
-    <div v-else-if="online && activeModule === 'qa'" class="qa-chat-wrap card">
+        <div v-show="knowledgeImportExpanded" class="knowledge-import-inner">
+          <p class="knowledge-tip">
+            {{
+              online
+                ? "粘贴或上传文本 / PDF，点击「联网整理并保存」后由模型自动分类；PDF 在本地先提取文字再上传整理。条目保存在本机，离线仍可浏览。"
+                : "当前离线，仅显示已保存在本机的资料；联网后可导入新内容。"
+            }}
+          </p>
+
+          <template v-if="online">
+            <input
+              ref="knowledgeFileInput"
+              type="file"
+              accept=".txt,.md,.csv,.pdf,text/plain,application/pdf"
+              class="knowledge-file-input"
+              @change="onKnowledgeFileChange"
+            />
+            <van-field
+              v-model="knowledgeImportDraft"
+              type="textarea"
+              rows="5"
+              autosize
+              maxlength="200000"
+              placeholder="在此粘贴林业资料正文…"
+              :border="false"
+              class="knowledge-paste-field"
+            />
+            <div class="knowledge-import-actions">
+              <van-button size="small" plain type="primary" @click="triggerKnowledgeFilePick">选择文件（含 PDF）</van-button>
+              <van-button
+                type="primary"
+                size="small"
+                :loading="knowledgeImportBusy"
+                :disabled="knowledgeImportBusy"
+                @click="onlineOrganizeAndSave"
+              >
+                联网整理并保存
+              </van-button>
+            </div>
+            <p v-if="knowledgeImportFileName" class="knowledge-fname">已载入：{{ knowledgeImportFileName }}</p>
+          </template>
+        </div>
+      </div>
+
+      <van-search v-model="knowledgeSearch" placeholder="搜索标题、关键词或正文" shape="round" class="knowledge-search" />
+
+      <div v-if="!knowledgeBlocks.length" class="knowledge-empty">
+        <p>暂无资料。联网后点击「展开资料导入」即可添加。</p>
+      </div>
+      <div v-else class="knowledge-groups">
+        <section v-for="block in knowledgeBlocks" :key="block.category" class="knowledge-group">
+          <h3 class="knowledge-cat-title">{{ block.category }}</h3>
+          <button
+            v-for="it in block.items"
+            :key="it.local_id"
+            type="button"
+            class="knowledge-row"
+            @click="openKnowledgeDetail(it)"
+          >
+            <span class="knowledge-row-title">{{ it.title }}</span>
+            <span class="knowledge-row-sum">{{ it.summary }}</span>
+          </button>
+        </section>
+      </div>
+    </div>
+
+    <van-popup
+      v-model:show="knowledgePopupVisible"
+      position="bottom"
+      round
+      :style="{ height: '78%' }"
+      class="knowledge-popup"
+      @closed="knowledgeDetailRow = null"
+    >
+      <div v-if="knowledgeDetailRow" class="knowledge-detail">
+        <div class="knowledge-detail-head">
+          <h2 class="knowledge-detail-title">{{ knowledgeDetailRow.title }}</h2>
+          <p class="knowledge-detail-meta">
+            {{ knowledgeDetailRow.category }} · {{ knowledgeDetailRow.source_filename || "无文件名" }}
+          </p>
+          <div class="knowledge-tags">
+            <span v-for="(kw, idx) in knowledgeDetailRow.keywords || []" :key="idx" class="knowledge-tag">{{ kw }}</span>
+          </div>
+        </div>
+        <div class="knowledge-detail-body">
+          <p class="knowledge-detail-summary"><strong>摘要：</strong>{{ knowledgeDetailRow.summary }}</p>
+          <pre class="knowledge-detail-content">{{ knowledgeDetailRow.content }}</pre>
+        </div>
+        <div class="knowledge-detail-foot">
+          <van-button v-if="online" block plain type="danger" @click="deleteKnowledgeEntry">从本机删除</van-button>
+          <van-button block type="primary" @click="closeKnowledgeDetail">关闭</van-button>
+        </div>
+      </div>
+    </van-popup>
+
+    <div v-if="online && activeModule === 'qa'" class="qa-chat-wrap card">
       <div class="qa-func-inner">
         <div class="qa-func-toolbar">
           <button type="button" class="qa-tool-btn qa-tool-btn--history" @click="openHistoryDrawer">历史</button>
@@ -1192,55 +1432,220 @@ onMounted(async () => {
   min-height: 240px;
 }
 
-.inset-card {
+.knowledge-panel {
+  padding: 12px 14px 16px;
+}
+
+.knowledge-import-wrap {
+  margin-bottom: 10px;
+}
+
+.knowledge-import-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 12px 14px;
   margin: 0;
-  padding: 10px;
-  background: #f7f8fa;
   border: 1px solid #ebedf0;
-  border-radius: 8px;
-  display: grid;
-  gap: 8px;
-}
-
-.inset-card h3 {
-  margin: 0 0 6px 0;
+  border-radius: 10px;
+  background: #fff;
   font-size: 15px;
+  font-weight: 600;
+  color: #323233;
+  cursor: pointer;
+  text-align: left;
+  gap: 10px;
+  box-sizing: border-box;
 }
 
-.sync-line {
-  margin: 0;
+.knowledge-import-toggle:active {
+  opacity: 0.92;
+}
+
+.knowledge-import-toggle-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+
+.knowledge-import-toggle-title {
+  line-height: 1.3;
+}
+
+.knowledge-import-toggle-sub {
   font-size: 12px;
-  color: #646566;
+  font-weight: 400;
+  color: #969799;
+  line-height: 1.35;
 }
 
-.preset-list {
+.knowledge-import-toggle-chevron {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: #969799;
+}
+
+.knowledge-import-inner {
+  margin-top: 10px;
+  padding-top: 2px;
+}
+
+.knowledge-tip {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: #646566;
+  line-height: 1.5;
+}
+
+.knowledge-file-input {
+  display: none;
+}
+
+.knowledge-paste-field {
+  background: #fff;
+  border-radius: 8px;
+  margin-bottom: 10px;
+}
+
+.knowledge-import-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  margin-bottom: 8px;
 }
 
-.policy-item {
-  border: 1px solid #f2f3f5;
+.knowledge-fname {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: #969799;
+}
+
+.knowledge-search {
+  padding: 0 0 8px;
+  background: transparent;
+}
+
+.knowledge-empty {
+  padding: 20px;
+  text-align: center;
+  color: #969799;
+  font-size: 14px;
+}
+
+.knowledge-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.knowledge-cat-title {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #323233;
+}
+
+.knowledge-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  text-align: left;
+  padding: 12px;
+  margin-bottom: 8px;
+  border: 1px solid #ebedf0;
   border-radius: 8px;
-  padding: 8px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.knowledge-row-title {
+  font-size: 15px;
+  font-weight: 500;
+  color: #323233;
+}
+
+.knowledge-row-sum {
+  margin-top: 6px;
+  font-size: 13px;
+  color: #969799;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.knowledge-detail {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 12px 14px;
+  box-sizing: border-box;
+}
+
+.knowledge-detail-head {
+  flex-shrink: 0;
+  border-bottom: 1px solid #ebedf0;
+  padding-bottom: 10px;
+  margin-bottom: 8px;
+}
+
+.knowledge-detail-title {
+  margin: 0 0 8px;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.knowledge-detail-meta {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: #969799;
+}
+
+.knowledge-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.knowledge-tag {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: #ecf9ff;
+  color: #1989fa;
+}
+
+.knowledge-detail-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.knowledge-detail-summary {
+  margin: 0 0 12px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.knowledge-detail-content {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #323233;
+  font-family: system-ui, sans-serif;
+}
+
+.knowledge-detail-foot {
+  flex-shrink: 0;
+  padding-top: 10px;
   display: grid;
   gap: 8px;
-}
-
-.message-item {
-  border: 1px solid #f2f3f5;
-  border-radius: 8px;
-  padding: 8px;
-}
-
-.message-role {
-  margin: 0 0 4px 0;
-  color: #969799;
-  font-size: 12px;
-  text-transform: uppercase;
-}
-
-.error-tip {
-  color: #ee0a24;
 }
 </style>

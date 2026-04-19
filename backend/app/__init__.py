@@ -15,7 +15,7 @@ from .models import (
     SyncCheckpoint,
     User,
 )
-from .routes.auth import auth_bp
+from .routes.auth import INTERNAL_USERS, auth_bp
 from .routes.health import health_bp
 from .routes.identify import identify_bp
 from .routes.patrol import patrol_bp
@@ -48,7 +48,7 @@ def create_app() -> Flask:
         db.create_all()
         _ensure_sqlite_extra_schema()
         _seed_knowledge_docs()
-        _ensure_single_internal_user()
+        _ensure_internal_users()
 
     return app
 
@@ -124,21 +124,27 @@ def _purge_user_related_data() -> None:
     db.session.commit()
 
 
-def _ensure_single_internal_user() -> None:
-    """仅保留内部账号 linye / 12345678；其余用户及关联数据一并清除。"""
-    internal_username = "linye"
-    internal_password = "12345678"
-
+def _ensure_internal_users() -> None:
+    """仅保留 INTERNAL_USERS 中的内部账号；其余用户及关联数据一并清除。"""
+    expected_names = set(INTERNAL_USERS.keys())
     users = User.query.all()
-    ok = (
-        len(users) == 1
-        and users[0].username == internal_username
-    )
-    if ok:
+    by_name = {u.username: u for u in users}
+
+    def _state_ok() -> bool:
+        if set(by_name) != expected_names or len(users) != len(expected_names):
+            return False
+        for name, pwd in INTERNAL_USERS.items():
+            u = by_name.get(name)
+            if not u or not u.check_password(pwd):
+                return False
+        return True
+
+    if _state_ok():
         return
 
     _purge_user_related_data()
-    user = User(username=internal_username, role="admin")
-    user.set_password(internal_password)
-    db.session.add(user)
+    for uname, pwd in INTERNAL_USERS.items():
+        user = User(username=uname, role="admin")
+        user.set_password(pwd)
+        db.session.add(user)
     db.session.commit()

@@ -441,8 +441,7 @@ async function fireEmergencyShortcut() {
     return;
   }
   await quickReport("fire", "火情快捷：发现疑似烟/火点，已尝试定位并上报。", { skipSuccessToast: true });
-  showSuccessToast("已保存火情事件，可前往识图补充现场照片");
-  router.push({ name: "identify", query: { scene: "general", hint: "fire" } });
+  showSuccessToast("已保存火情事件");
 }
 
 async function syncNow() {
@@ -774,7 +773,7 @@ watch(online, async (value) => {
         发现火情：一键上报
       </van-button>
       <van-button type="danger" plain block :disabled="!hasActiveTask" @click="fireEmergencyShortcut">
-        火情快捷：上报并前往识图
+        火情快捷：定位并上报
       </van-button>
       <van-button
         type="warning"
@@ -846,7 +845,6 @@ watch(online, async (value) => {
       >
         <p class="event-title">
           {{ eventTypeText(item.event_type) }}
-          <span v-if="['disease', 'pest', 'ecology'].includes(item.event_type)" class="event-tag">识图联动</span>
         </p>
         <p class="event-desc">{{ item.description }}</p>
         <p class="event-meta">

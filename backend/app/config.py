@@ -35,7 +35,7 @@ class Config:
     LLM_API_BASE_URL = os.getenv("LLM_API_BASE_URL", "https://api.deepseek.com")
     LLM_API_KEY = os.getenv("LLM_API_KEY", "")
     LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "deepseek-chat")
-    # 植物识别等第三方接口（默认较短）；DeepSeek 单独使用更长超时
+    # 百度图像分类（植物+动物识图等，默认较短）；DeepSeek 单独使用更长超时
     LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT_SECONDS", "90"))
     LLM_CONTEXT_MESSAGES_MAX = int(os.getenv("LLM_CONTEXT_MESSAGES_MAX", "20"))
     # 林业相关性门控：先发短请求分类，再决定是否完整问答（可用 LLM_FORESTRY_GATE_ENABLED=0 关闭）
@@ -45,5 +45,8 @@ class Config:
         "yes",
     )
     LLM_CLASSIFY_TIMEOUT_SECONDS = int(os.getenv("LLM_CLASSIFY_TIMEOUT_SECONDS", "20"))
+    LLM_IDENTIFY_INTRO_TIMEOUT_SECONDS = int(os.getenv("LLM_IDENTIFY_INTRO_TIMEOUT_SECONDS", "28"))
+    # 知识库导入：送入模型的正文上限（字符）；全文仍可按返回值 content 截断存本地
+    LLM_KNOWLEDGE_IMPORT_MAX_CHARS = int(os.getenv("LLM_KNOWLEDGE_IMPORT_MAX_CHARS", "14000"))
     THIRD_PARTY_TIMEOUT_SECONDS = int(os.getenv("THIRD_PARTY_TIMEOUT_SECONDS", "8"))
     THIRD_PARTY_RETRIES = int(os.getenv("THIRD_PARTY_RETRIES", "1"))

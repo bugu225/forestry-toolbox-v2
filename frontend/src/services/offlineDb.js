@@ -1,5 +1,5 @@
 const DB_NAME = "ftb2_offline_db";
-const DB_VERSION = 2;
+const DB_VERSION = 4;
 const STORE_PATROL_TASKS = "patrol_tasks";
 const STORE_PATROL_POINTS = "patrol_points";
 const STORE_PATROL_EVENTS = "patrol_events";
@@ -8,6 +8,8 @@ const STORE_QA_SESSIONS = "qa_sessions";
 const STORE_QA_MESSAGES = "qa_messages";
 const STORE_QA_KNOWLEDGE_DOCS = "qa_knowledge_docs";
 const STORE_QA_PENDING_QUESTIONS = "qa_pending_questions";
+const STORE_USER_KNOWLEDGE_ENTRIES = "user_knowledge_entries";
+const STORE_IDENTIFY_GALLERY = "identify_gallery";
 
 function openDb() {
   return new Promise((resolve, reject) => {
@@ -40,6 +42,12 @@ function openDb() {
       if (!db.objectStoreNames.contains(STORE_QA_PENDING_QUESTIONS)) {
         db.createObjectStore(STORE_QA_PENDING_QUESTIONS, { keyPath: "local_id" });
       }
+      if (!db.objectStoreNames.contains(STORE_USER_KNOWLEDGE_ENTRIES)) {
+        db.createObjectStore(STORE_USER_KNOWLEDGE_ENTRIES, { keyPath: "local_id" });
+      }
+      if (!db.objectStoreNames.contains(STORE_IDENTIFY_GALLERY)) {
+        db.createObjectStore(STORE_IDENTIFY_GALLERY, { keyPath: "local_id" });
+      }
     };
   });
 }
@@ -71,6 +79,18 @@ export async function getAllRecords(storeName) {
   return result;
 }
 
+export async function getRecord(storeName, key) {
+  const db = await openDb();
+  const tx = db.transaction(storeName, "readonly");
+  const req = tx.objectStore(storeName).get(key);
+  const result = await new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result ?? null);
+    req.onerror = () => reject(req.error);
+  });
+  await txPromise(tx);
+  return result;
+}
+
 export async function clearStore(storeName) {
   const db = await openDb();
   const tx = db.transaction(storeName, "readwrite");
@@ -89,9 +109,10 @@ export const stores = {
   patrolTasks: STORE_PATROL_TASKS,
   patrolPoints: STORE_PATROL_POINTS,
   patrolEvents: STORE_PATROL_EVENTS,
-  identifyJobs: STORE_IDENTIFY_JOBS,
   qaSessions: STORE_QA_SESSIONS,
   qaMessages: STORE_QA_MESSAGES,
   qaKnowledgeDocs: STORE_QA_KNOWLEDGE_DOCS,
   qaPendingQuestions: STORE_QA_PENDING_QUESTIONS,
+  userKnowledgeEntries: STORE_USER_KNOWLEDGE_ENTRIES,
+  identifyGallery: STORE_IDENTIFY_GALLERY,
 };

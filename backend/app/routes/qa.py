@@ -6,7 +6,11 @@ from flask_jwt_extended import get_jwt_identity, jwt_required
 
 from ..extensions import db
 from ..models import KnowledgeDoc, QAMessage, QASession, SyncAuditLog, SyncCheckpoint
-from ..services.llm_provider import ask_llm_or_fallback, classify_forestry_related
+from ..services.llm_provider import (
+    ask_llm_or_fallback,
+    classify_forestry_related,
+    organize_knowledge_document,
+)
 
 qa_bp = Blueprint("qa", __name__)
 
@@ -464,3 +468,30 @@ def knowledge_search():
 def list_knowledge_docs():
     docs = KnowledgeDoc.query.order_by(KnowledgeDoc.created_at.desc()).all()
     return jsonify({"items": [_serialize_doc(doc) for doc in docs]})
+
+
+@qa_bp.post("/knowledge-import")
+@jwt_required()
+def knowledge_import_organize():
+    """
+    联网：对用户粘贴/上传的正文调用 LLM 分类整理，返回结构化条目（由前端写入 IndexedDB）。
+    """
+    data = request.get_json(silent=True) or {}
+    text = (data.get("text") or "").strip()
+    filename = (data.get("filename") or "").strip() or None
+    if not text:
+        return jsonify({"error": {"code": "bad_request", "message": "正文不能为空"}}), 422
+    max_in = 200_000
+    if len(text) > max_in:
+        return jsonify(
+            {"error": {"code": "bad_request", "message": f"正文过长，请控制在 {max_in} 字以内"}}
+        ), 422
+    try:
+        item = organize_knowledge_document(text, filename)
+    except ValueError as exc:
+        return jsonify({"error": {"code": "bad_request", "message": str(exc)}}), 422
+    except Exception as exc:  # noqa: BLE001
+        return jsonify(
+            {"error": {"code": "organize_failed", "message": f"资料整理失败：{exc}"}}
+        ), 502
+    return jsonify({"item": item})

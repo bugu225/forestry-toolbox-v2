@@ -16,9 +16,8 @@ const online = ref(navigator.onLine);
 const moreActive = ref([]);
 
 const username = computed(() => authStore.user?.username || "用户");
-const pending = ref({ identify: 0, qa: 0, patrol: 0 });
+const pending = ref({ qa: 0, patrol: 0 });
 const syncOverview = ref({
-  identify: getSyncMeta("identify"),
   qa: getSyncMeta("qa"),
   patrol: getSyncMeta("patrol"),
 });
@@ -32,7 +31,6 @@ const pwaUpdateRegistration = ref(null);
 let deferredInstallPrompt = null;
 const topPendingModule = computed(() => {
   const entries = [
-    { key: "identify", count: pending.value.identify },
     { key: "qa", count: pending.value.qa },
     { key: "patrol", count: pending.value.patrol },
   ].sort((a, b) => b.count - a.count);
@@ -40,7 +38,6 @@ const topPendingModule = computed(() => {
 });
 const moduleHealth = computed(() => {
   const specs = [
-    { key: "identify", label: "识图" },
     { key: "qa", label: "问答" },
     { key: "patrol", label: "巡护" },
   ];
@@ -58,7 +55,6 @@ const moduleHealth = computed(() => {
 });
 
 async function refreshPending() {
-  pending.value.identify = (await getAllRecords(stores.identifyJobs)).length;
   pending.value.qa =
     (await getAllRecords(stores.qaSessions)).length +
     (await getAllRecords(stores.qaMessages)).length +
@@ -71,18 +67,17 @@ async function refreshPending() {
 
 function refreshSyncOverview() {
   syncOverview.value = {
-    identify: getSyncMeta("identify"),
     qa: getSyncMeta("qa"),
     patrol: getSyncMeta("patrol"),
   };
 }
 
-function goIdentify() {
-  router.push({ name: "identify" });
-}
-
 function goQa() {
   router.push({ name: "qa" });
+}
+
+function goIdentify() {
+  router.push({ name: "identify" });
 }
 
 function goPatrol() {
@@ -96,7 +91,6 @@ function goSyncAudits() {
 function goTopPendingModule() {
   const target = topPendingModule.value;
   if (!target || target.count <= 0) return;
-  if (target.key === "identify") goIdentify();
   if (target.key === "qa") goQa();
   if (target.key === "patrol") goPatrol();
 }
@@ -108,7 +102,6 @@ function toStatusText(status) {
 }
 
 function buildFailureSuggestion(module) {
-  if (module === "识图") return "建议：检查网络与百度 Key 配置后重试。";
   if (module === "问答") return "建议：检查网络、DeepSeek Key 与账户余额后重试。";
   if (module === "巡护") return "建议：检查网络、登录状态与定位权限后重试。";
   return "建议：检查网络与配置后重试。";
@@ -156,15 +149,6 @@ function applyPwaUpdateNow() {
   navigator.serviceWorker.addEventListener("controllerchange", () => {
     window.location.reload();
   }, { once: true });
-}
-
-async function retryIdentify() {
-  const jobs = await getAllRecords(stores.identifyJobs);
-  if (!jobs.length) return { module: "识图", status: "skipped", detail: "无待同步数据" };
-  await postWithSyncRetry(apiClient, "/identify/sync", { jobs });
-  await clearStore(stores.identifyJobs);
-  setSyncMeta("identify", { lastSuccessAt: new Date().toISOString(), lastError: "" });
-  return { module: "识图", status: "success", detail: `已同步 ${jobs.length} 条` };
 }
 
 async function retryQa() {
@@ -241,7 +225,6 @@ async function retryAllSync() {
   retryReport.value = [];
   const results = [];
   const tasks = [
-    { key: "identify", label: "识图", run: retryIdentify },
     { key: "qa", label: "问答", run: retryQa },
     { key: "patrol", label: "巡护", run: retryPatrol },
   ];
@@ -314,7 +297,7 @@ onMounted(() => {
         </button>
         <button type="button" class="entry-card entry-card--id" @click="goIdentify">
           <span class="entry-card-title">林业识图</span>
-          <span class="entry-card-desc">拍照识植物 / 离线保存</span>
+          <span class="entry-card-desc">图集、拍照与相册</span>
         </button>
         <button type="button" class="entry-card entry-card--patrol" @click="goPatrol">
           <span class="entry-card-title">巡护助手</span>
@@ -326,7 +309,7 @@ onMounted(() => {
         <van-collapse-item title="其他、等等" name="more" class="more-item">
           <div class="more-inner">
             <p class="more-line">
-              待同步：识图 {{ pending.identify }}，问答 {{ pending.qa }}，巡护 {{ pending.patrol }}
+              待同步：问答 {{ pending.qa }}，巡护 {{ pending.patrol }}
             </p>
             <div class="pwa-tip">
               <p class="pwa-title">离线优先：建议添加到主屏幕</p>
@@ -342,8 +325,7 @@ onMounted(() => {
               </van-button>
             </div>
             <p class="more-line muted">
-              最近同步 · 识图 {{ syncOverview.identify.lastSuccessAt || "暂无" }}；问答
-              {{ syncOverview.qa.lastSuccessAt || "暂无" }}；巡护
+              最近同步 · 问答 {{ syncOverview.qa.lastSuccessAt || "暂无" }}；巡护
               {{ syncOverview.patrol.lastSuccessAt || "暂无" }}
             </p>
             <div class="health-list">

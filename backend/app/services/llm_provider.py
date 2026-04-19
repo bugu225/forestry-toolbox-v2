@@ -76,6 +76,146 @@ def classify_forestry_related(question: str, conversation_snippet: str | None = 
     return True
 
 
+# 与前端知识库分组顺序一致；分类必须落在此集合内（否则归为「其他」）
+FORESTRY_KNOWLEDGE_CATEGORIES = (
+    "森林防火",
+    "林木病虫害",
+    "造林抚育",
+    "林地与采伐",
+    "生态巡护",
+    "野生动植物保护",
+    "政策法规与执法",
+    "机具与作业安全",
+    "油茶与经济林",
+    "生态修复",
+    "其他",
+)
+
+
+def _extract_json_object(raw: str) -> dict:
+    text = (raw or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```\s*$", "", text)
+    text = text.strip()
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            return data
+    except json.JSONDecodeError:
+        pass
+    m = re.search(r"\{[\s\S]*\}", text)
+    if not m:
+        raise ValueError("无法解析模型返回的 JSON")
+    data = json.loads(m.group(0))
+    if not isinstance(data, dict):
+        raise ValueError("模型返回不是 JSON 对象")
+    return data
+
+
+def organize_knowledge_document(raw_text: str, source_filename: str | None = None) -> dict:
+    """
+    联网调用 LLM，将用户资料整理为固定字段。返回 dict 供前端写入 IndexedDB。
+    raises ValueError: 未配置 Key、正文为空、解析失败等。
+    """
+    base_url = current_app.config["LLM_API_BASE_URL"]
+    api_key = current_app.config["LLM_API_KEY"]
+    model = current_app.config["LLM_MODEL_NAME"]
+    timeout = current_app.config["LLM_TIMEOUT_SECONDS"]
+    max_chars = int(current_app.config.get("LLM_KNOWLEDGE_IMPORT_MAX_CHARS", 14000))
+    full_text = (raw_text or "").strip()
+    if not full_text:
+        raise ValueError("正文不能为空")
+    if not api_key or not base_url:
+        raise ValueError("未配置 LLM，无法在线整理资料")
+
+    text_for_model = full_text[:max_chars]
+    fname = (source_filename or "").strip() or "未命名文件"
+
+    cats = "、".join(FORESTRY_KNOWLEDGE_CATEGORIES)
+    system_content = (
+        "你是林业资料编目助手。根据用户提供的正文，提取结构化信息。"
+        "category 必须从以下类目中选择其一（完全一致）："
+        f"{cats}。"
+        "若难以归类，选「其他」。"
+        "只输出一个 JSON 对象，不要 markdown 代码围栏，不要其它说明文字。"
+        '字段：title（≤40字）、category（上述之一）、keywords（3～8个字符串数组）、'
+        'summary（≤300字中文摘要，覆盖要点）。'
+    )
+    user_content = (
+        f"【文件名】{fname}\n\n【正文】\n{text_for_model}"
+        + (f"\n\n（正文已截断至前 {max_chars} 字用于分析，分类仍应代表全文主题）" if len(full_text) > max_chars else "")
+    )
+
+    endpoint = f"{base_url.rstrip('/')}/chat/completions"
+    response = requests.post(
+        endpoint,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": user_content},
+            ],
+            "temperature": 0.2,
+            "max_tokens": 900,
+        },
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    payload = response.json() or {}
+    choices = payload.get("choices") or []
+    raw_out = ((choices[0].get("message") or {}).get("content") or "").strip() if choices else ""
+    if not raw_out:
+        raise ValueError("模型返回为空")
+
+    try:
+        data = _extract_json_object(raw_out)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise ValueError(f"无法解析整理结果，请重试或缩短正文：{exc}") from exc
+    title = str(data.get("title") or "").strip() or fname
+    if len(title) > 80:
+        title = title[:80]
+    category = str(data.get("category") or "").strip() or "其他"
+    if category not in FORESTRY_KNOWLEDGE_CATEGORIES:
+        category = "其他"
+    kw_raw = data.get("keywords") or []
+    if isinstance(kw_raw, str):
+        kw_raw = [k.strip() for k in re.split(r"[,，;；\s]+", kw_raw) if k.strip()]
+    keywords = []
+    for k in kw_raw:
+        if not isinstance(k, str):
+            continue
+        s = k.strip()
+        if s and s not in keywords:
+            keywords.append(s)
+        if len(keywords) >= 10:
+            break
+    if len(keywords) < 3:
+        keywords = (keywords + ["林业", "资料", "速查"])[:3]
+
+    summary = str(data.get("summary") or "").strip() or title
+    if len(summary) > 500:
+        summary = summary[:500]
+
+    content_cap = 150000
+    body = full_text[:content_cap]
+    if len(full_text) > content_cap:
+        summary = (summary + "（正文过长，已截断保存）")[:500]
+
+    return {
+        "title": title,
+        "category": category,
+        "keywords": keywords,
+        "summary": summary,
+        "content": body,
+        "source_filename": fname,
+    }
+
+
 def local_fallback_answer(question: str):
     q = (question or "").strip()
     if "烟" in q or "火" in q:
@@ -155,3 +295,59 @@ def ask_llm_or_fallback(
         return content, "deepseek"
     except Exception:  # noqa: BLE001
         return local_fallback_answer(question), "fallback-local"
+
+
+def brief_species_intro_zh(species_name: str, *, source_channel: str = "") -> str:
+    """
+    调用 DeepSeek 生成不超过 100 个汉字（含标点）的物种简介；未配置 Key 或失败时返回空串。
+    仅在 Flask 请求上下文中调用（使用 current_app）。
+    """
+    base_url = (current_app.config.get("LLM_API_BASE_URL") or "").strip()
+    api_key = (current_app.config.get("LLM_API_KEY") or "").strip()
+    model = current_app.config.get("LLM_MODEL_NAME", "deepseek-chat")
+    timeout = int(current_app.config.get("LLM_IDENTIFY_INTRO_TIMEOUT_SECONDS", 28))
+    name = (species_name or "").strip()
+    if not name or not api_key:
+        return ""
+
+    ch = "植物" if source_channel == "plant" else ("动物" if source_channel == "animal" else "动植物")
+    system_content = (
+        "你是林业与生态领域的科普助手。仅用简体中文输出一段连续文字，不要使用 Markdown、编号、引号或小标题。"
+        "总长度严格不超过 100 个汉字（含标点），只写该物种最核心、便于野外辨认或管护认知的要点。"
+    )
+    user_content = (
+        f"物种名称：{name}\n"
+        f"百度识图通道：{ch}\n"
+        "请直接输出简介正文，不要重复物种名当标题。"
+    )
+    endpoint = f"{base_url.rstrip('/')}/chat/completions"
+    try:
+        response = requests.post(
+            endpoint,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_content},
+                    {"role": "user", "content": user_content},
+                ],
+                "temperature": 0.25,
+                "max_tokens": 220,
+            },
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        payload = response.json() or {}
+        choices = payload.get("choices") or []
+        text = ((choices[0].get("message") or {}).get("content") or "").strip() if choices else ""
+        text = re.sub(r"[\r\n]+", "", text) if text else ""
+        if not text:
+            return ""
+        if len(text) > 100:
+            return text[:99] + "…"
+        return text
+    except Exception:  # noqa: BLE001
+        return ""
