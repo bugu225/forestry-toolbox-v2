@@ -1,9 +1,10 @@
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from "vue";
+import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, reactive, ref } from "vue";
 import { storeToRefs } from "pinia";
-import { showFailToast, showSuccessToast, showToast } from "vant";
-import { loadAmapSdk } from "../services/amapLoader";
+import { showFailToast, showSuccessToast } from "vant";
 import {
+  countPatrolEventsForTask,
+  countPatrolPointsForTask,
   deleteRecord,
   getAllRecords,
   getPatrolEventsForTask,
@@ -14,22 +15,18 @@ import {
 } from "../services/offlineDb";
 import { useNetworkStore } from "../stores/network";
 
+const PatrolMapPanel = defineAsyncComponent(() => import("../components/PatrolMapPanel.vue"));
+
 const AUTO_SAMPLE_MS = 5 * 60 * 1000;
-const MAX_PATH_POINTS_ON_MAP = 500;
-const MAX_EVENT_MARKERS_ON_MAP = 120;
 const MAX_PATROL_POINTS_UI = 2500;
 const MAX_PATROL_EVENTS_UI = 800;
-/**
- * 为 true 时完全冻结高德地图：不请求 SDK、不创建地图、不渲染轨迹点。
- * 用于排查「进入巡护页卡顿」是否与地图相关；确认后改回 false 并重新构建部署。
- */
-const PATROL_MAP_FROZEN = true;
 const HENAN_BOUNDS = {
   minLng: 110.35,
   maxLng: 116.65,
   minLat: 31.38,
   maxLat: 36.37,
 };
+
 const networkStore = useNetworkStore();
 const { effectiveOnline: online } = storeToRefs(networkStore);
 
@@ -40,22 +37,19 @@ const viewingTaskLocalId = ref("");
 const recording = ref(false);
 const eventPopupVisible = ref(false);
 const eventBusy = ref(false);
-const mapWrapRef = ref(null);
 const eventPhotoInput = ref(null);
 const eventAudioInput = ref(null);
 const filterType = ref("all");
 const sortOrder = ref("desc");
 const focusedEventLocalId = ref("");
-let timerId = null;
-let map = null;
-let polyline = null;
-let eventMarkers = [];
-const mapReady = ref(false);
-const mapLoading = ref(false);
-const mapError = ref("");
 const totalPatrolPointCount = ref(0);
 const totalPatrolEventCount = ref(0);
-let renderMapRaf = 0;
+const detailsLoading = ref(false);
+const mapRequested = ref(false);
+const mapPanelRef = ref(null);
+
+let timerId = null;
+
 const eventTypeOptions = [
   { text: "病虫害", value: "pest", emoji: "●" },
   { text: "火情", value: "fire", emoji: "▲" },
@@ -73,10 +67,6 @@ const eventDraft = reactive({
   audioDataUrl: "",
 });
 
-/** 地图实例已就绪（仅在线且未冻结时才会创建） */
-const mapDisplayReady = computed(
-  () => !PATROL_MAP_FROZEN && Boolean(map) && mapReady.value && online.value
-);
 const sortedEvents = computed(() => {
   const copied = [...patrolEvents.value];
   copied.sort((a, b) => {
@@ -94,8 +84,6 @@ const pointCount = computed(() => totalPatrolPointCount.value);
 const eventCount = computed(() => totalPatrolEventCount.value);
 const uiPointLoaded = computed(() => patrolPoints.value.length);
 const uiEventLoaded = computed(() => patrolEvents.value.length);
-const hiddenPathPointCount = computed(() => Math.max(0, patrolPoints.value.length - MAX_PATH_POINTS_ON_MAP));
-const hiddenEventCount = computed(() => Math.max(0, patrolEvents.value.length - MAX_EVENT_MARKERS_ON_MAP));
 
 function uid(prefix) {
   return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
@@ -164,7 +152,7 @@ async function getCurrentPosition() {
   });
 }
 
-async function refreshLocal() {
+async function refreshPatrolTasksOnly() {
   const tasks = await getAllRecords(stores.patrolTasks);
   const sortedTasks = [...tasks].sort((a, b) => {
     const ta = new Date(a.started_at || a.ended_at || 0).getTime();
@@ -176,13 +164,25 @@ async function refreshLocal() {
   viewingTaskLocalId.value = (active || latestTask)?.local_id || "";
   currentTask.value = active || null;
   recording.value = Boolean(active);
+}
 
+async function refreshPatrolCounts() {
+  const vid = viewingTaskLocalId.value;
+  if (!vid) {
+    totalPatrolPointCount.value = 0;
+    totalPatrolEventCount.value = 0;
+    return;
+  }
+  const [pc, ec] = await Promise.all([countPatrolPointsForTask(vid), countPatrolEventsForTask(vid)]);
+  totalPatrolPointCount.value = pc;
+  totalPatrolEventCount.value = ec;
+}
+
+async function refreshPatrolDetails() {
   const vid = viewingTaskLocalId.value;
   if (!vid) {
     patrolPoints.value = [];
     patrolEvents.value = [];
-    totalPatrolPointCount.value = 0;
-    totalPatrolEventCount.value = 0;
     return;
   }
   const [pRes, eRes] = await Promise.all([
@@ -190,9 +190,13 @@ async function refreshLocal() {
     getPatrolEventsForTask(vid, { maxRows: MAX_PATROL_EVENTS_UI }),
   ]);
   patrolPoints.value = pRes.rows;
-  totalPatrolPointCount.value = pRes.total;
   patrolEvents.value = eRes.rows;
-  totalPatrolEventCount.value = eRes.total;
+}
+
+async function refreshPatrolDataFull() {
+  await refreshPatrolTasksOnly();
+  await refreshPatrolCounts();
+  await refreshPatrolDetails();
 }
 
 function stopTimer() {
@@ -216,8 +220,7 @@ async function samplePoint(manual = false) {
       captured_at: new Date().toISOString(),
       source: manual ? "manual" : "auto",
     });
-    await refreshLocal();
-    scheduleRenderMap();
+    await refreshPatrolDataFull();
     if (manual) showSuccessToast("已记录当前轨迹点");
   } catch (error) {
     if (manual) showFailToast(error?.message || "记录轨迹点失败");
@@ -265,8 +268,7 @@ async function stopPatrol() {
   });
   currentTask.value = null;
   recording.value = false;
-  await refreshLocal();
-  scheduleRenderMap();
+  await refreshPatrolDataFull();
   showSuccessToast("已结束巡护");
 }
 
@@ -332,8 +334,7 @@ async function saveEvent() {
       audio_data_url: eventDraft.audioDataUrl || "",
     });
     eventPopupVisible.value = false;
-    await refreshLocal();
-    scheduleRenderMap();
+    await refreshPatrolDataFull();
     showSuccessToast("事件已保存");
   } catch {
     showFailToast("保存事件失败");
@@ -346,8 +347,7 @@ async function removeEvent(row) {
   const ok = window.confirm("确认删除该事件？");
   if (!ok) return;
   await deleteRecord(stores.patrolEvents, row.local_id);
-  await refreshLocal();
-  scheduleRenderMap();
+  await refreshPatrolDataFull();
   showSuccessToast("已删除");
 }
 
@@ -388,219 +388,63 @@ function formatTime(iso) {
   ).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-function pointToLngLat(row) {
-  return [Number(row.lng), Number(row.lat)];
-}
-
-function locateEventOnMap(row) {
+async function locateEventOnMap(row) {
   focusedEventLocalId.value = row.local_id;
-  if (PATROL_MAP_FROZEN) {
-    showToast({ message: "地图模块已暂时关闭（性能排查），无法在地图上定位。", position: "bottom" });
-    return;
+  if (!online.value) return;
+  if (!mapRequested.value) {
+    mapRequested.value = true;
   }
-  if (!row || !map || !mapDisplayReady.value) {
-    if (online.value && row && !mapReady.value) {
-      showFailToast("请等待地图加载完成后再定位");
-    }
-    return;
-  }
-  map.setZoomAndCenter(16, pointToLngLat(row));
-}
-
-function destroyMap() {
-  clearMapObjects();
-  if (map) {
-    try {
-      map.destroy();
-    } catch (_) {
-      /* ignore */
-    }
-    map = null;
-  }
-  mapReady.value = false;
-  mapLoading.value = false;
-}
-
-function scheduleRenderMap() {
-  if (PATROL_MAP_FROZEN || !map || !online.value) return;
-  if (renderMapRaf) cancelAnimationFrame(renderMapRaf);
-  renderMapRaf = requestAnimationFrame(() => {
-    renderMapRaf = 0;
-    renderMap();
-  });
-}
-
-function scheduleIdle(fn) {
-  if (typeof requestIdleCallback === "function") {
-    requestIdleCallback(fn, { timeout: 2800 });
-  } else {
-    setTimeout(fn, 500);
-  }
-}
-
-async function ensureMap() {
-  if (PATROL_MAP_FROZEN || !online.value || map) return;
-  for (let i = 0; i < 12 && online.value && !mapWrapRef.value; i += 1) {
+  for (let i = 0; i < 25; i += 1) {
     await nextTick();
-  }
-  if (!online.value || !mapWrapRef.value) return;
-  try {
-    mapLoading.value = true;
-    mapError.value = "";
-    const AMap = await loadAmapSdk();
-    map = new AMap.Map(mapWrapRef.value, {
-      zoom: 11,
-      center: [113.65, 34.76],
-      viewMode: "2D",
-      pitchEnable: false,
-      rotateEnable: false,
-      jogEnable: false,
-      zooms: [6, 18],
-    });
-    const bounds = new AMap.Bounds([HENAN_BOUNDS.minLng, HENAN_BOUNDS.minLat], [HENAN_BOUNDS.maxLng, HENAN_BOUNDS.maxLat]);
-    map.setLimitBounds(bounds);
-    mapReady.value = true;
-  } catch (error) {
-    mapReady.value = false;
-    if (map) {
-      try {
-        map.destroy();
-      } catch (_) {
-        /* ignore */
-      }
-      map = null;
+    const panel = mapPanelRef.value;
+    if (panel && typeof panel.zoomToEvent === "function") {
+      await panel.zoomToEvent(row);
+      return;
     }
-    mapError.value = error?.message || "地图加载失败";
-    showFailToast(mapError.value);
-  } finally {
-    mapLoading.value = false;
+    await new Promise((r) => setTimeout(r, 50));
   }
 }
 
-async function initMapSilently() {
-  if (PATROL_MAP_FROZEN || !online.value || map) return;
-  await ensureMap();
-  await nextTick();
-  scheduleRenderMap();
+function requestMapPanel() {
+  mapRequested.value = true;
 }
 
-async function initMapOnDemand() {
-  if (PATROL_MAP_FROZEN) {
-    showToast({ message: "地图已冻结（性能排查），暂不可手动加载。", position: "bottom" });
-    return;
-  }
-  mapError.value = "";
-  if (!online.value) {
-    showFailToast("当前离线，无法加载在线地图");
-    return;
-  }
-  await ensureMap();
-  await nextTick();
-  scheduleRenderMap();
-}
-
-function clearMapObjects() {
-  if (!map) return;
-  if (polyline) {
-    map.remove(polyline);
-    polyline = null;
-  }
-  if (eventMarkers.length) {
-    map.remove(eventMarkers);
-    eventMarkers = [];
-  }
-}
-
-function renderMap() {
-  if (PATROL_MAP_FROZEN || !map || !online.value) return;
-  clearMapObjects();
-  const pointsForMap = patrolPoints.value.slice(-MAX_PATH_POINTS_ON_MAP);
-  if (pointsForMap.length >= 2) {
-    const AMap = window.AMap;
-    const path = pointsForMap.map(pointToLngLat);
-    polyline = new AMap.Polyline({
-      path,
-      strokeColor: "#1989fa",
-      strokeWeight: 5,
-      lineJoin: "round",
-      lineCap: "round",
-    });
-    map.add(polyline);
-    map.setCenter(path[path.length - 1]);
-  }
-  if (patrolEvents.value.length) {
-    const AMap = window.AMap;
-    const eventsForMap = patrolEvents.value.slice(0, MAX_EVENT_MARKERS_ON_MAP);
-    eventMarkers = eventsForMap.map((ev) => {
-      const meta = eventTypeMeta(ev.type);
-      const marker = new AMap.CircleMarker({
-        position: pointToLngLat(ev),
-        radius: 7,
-        strokeWeight: 1,
-        strokeColor: "#1f1f1f",
-        fillColor: ev.type === "fire" ? "#ee0a24" : ev.type === "pest" ? "#07c160" : ev.type === "logging" ? "#1989fa" : "#ff976a",
-        fillOpacity: 0.95,
-        bubble: true,
-      });
-      marker.on("click", () => {
-        focusedEventLocalId.value = ev.local_id;
-        showSuccessToast(`${meta.emoji} ${meta.text} · ${formatTime(ev.captured_at)}`);
-      });
-      return marker;
-    });
-    map.add(eventMarkers);
-  }
-}
-
-function handleWindowOnline() {
+function onWindowOnline() {
   networkStore.setNavigatorOnline(true);
-  if (PATROL_MAP_FROZEN) return;
-  if (map && mapReady.value) {
-    nextTick(() => scheduleRenderMap());
-  } else if (online.value) {
-    scheduleIdle(() => initMapSilently());
-  }
 }
 
-function handleWindowOffline() {
+function onWindowOffline() {
   networkStore.setNavigatorOnline(false);
 }
 
-onMounted(async () => {
-  await refreshLocal();
-  if (recording.value) startTimer();
-  window.addEventListener("online", handleWindowOnline);
-  window.addEventListener("offline", handleWindowOffline);
-  if (online.value && !PATROL_MAP_FROZEN) {
-    scheduleIdle(() => initMapSilently());
-  }
+onMounted(() => {
+  window.addEventListener("online", onWindowOnline);
+  window.addEventListener("offline", onWindowOffline);
+  void (async () => {
+    await refreshPatrolTasksOnly();
+    await refreshPatrolCounts();
+    if (recording.value) startTimer();
+    detailsLoading.value = true;
+    try {
+      await new Promise((resolve) => {
+        if (typeof requestIdleCallback === "function") {
+          requestIdleCallback(() => resolve(), { timeout: 2000 });
+        } else {
+          setTimeout(resolve, 48);
+        }
+      });
+      await refreshPatrolDetails();
+    } finally {
+      detailsLoading.value = false;
+    }
+  })();
 });
 
 onUnmounted(() => {
-  window.removeEventListener("online", handleWindowOnline);
-  window.removeEventListener("offline", handleWindowOffline);
+  window.removeEventListener("online", onWindowOnline);
+  window.removeEventListener("offline", onWindowOffline);
   stopTimer();
-  destroyMap();
-  if (renderMapRaf) cancelAnimationFrame(renderMapRaf);
 });
-
-watch(online, (isOnline) => {
-  if (!isOnline) {
-    destroyMap();
-    mapError.value = "";
-  } else if (!PATROL_MAP_FROZEN) {
-    scheduleIdle(() => {
-      if (online.value) initMapSilently();
-    });
-  }
-});
-
-watch(
-  () => [patrolPoints.value.length, patrolEvents.value.length, mapReady.value, online.value],
-  () => {
-    if (mapDisplayReady.value) scheduleRenderMap();
-  }
-);
 </script>
 
 <template>
@@ -625,7 +469,7 @@ watch(
         <span>事件数：{{ eventCount }}</span>
       </div>
       <p v-if="pointCount > uiPointLoaded || eventCount > uiEventLoaded" class="tip">
-        为减轻卡顿，界面仅载入当前任务最近 {{ MAX_PATROL_POINTS_UI }} 个轨迹点与 {{ MAX_PATROL_EVENTS_UI }} 条事件用于展示；统计数字为实际总量。
+        为减轻卡顿，列表仅载入当前任务最近 {{ MAX_PATROL_POINTS_UI }} 个轨迹点与 {{ MAX_PATROL_EVENTS_UI }} 条事件；统计为实际总量。
       </p>
     </section>
 
@@ -640,41 +484,19 @@ watch(
     <section class="card map-box">
       <div class="head">
         <h3>地图轨迹可视化</h3>
-        <template v-if="!PATROL_MAP_FROZEN">
-          <div class="head-actions">
-            <span class="sub">{{
-              !online ? "离线不显示地图" : mapDisplayReady ? "已加载高德地图" : mapLoading ? "地图加载中…" : "联网后将自动加载"
-            }}</span>
-            <van-button
-              v-if="online && !mapLoading && !mapDisplayReady"
-              size="mini"
-              type="primary"
-              plain
-              @click="initMapOnDemand"
-            >
-              {{ mapError ? "重试" : "立即加载" }}
-            </van-button>
-          </div>
-        </template>
-        <span v-else class="sub">地图已临时关闭（性能排查）</span>
       </div>
-      <div v-if="PATROL_MAP_FROZEN" class="map-frozen-tip">
-        <p class="tip">
-          已冻结高德地图：不加载 SDK、不初始化地图。开始/结束巡护、采样、事件列表与导出仍可用；用于对比是否因地图导致卡顿。恢复请将
-          <code>PatrolView.vue</code> 中 <code>PATROL_MAP_FROZEN</code> 改为 <code>false</code> 后重新构建。
-        </p>
-      </div>
-      <div v-else-if="online" class="map-shell">
-        <div ref="mapWrapRef" class="map-wrap" />
-        <div v-if="mapLoading" class="map-status">地图加载中…</div>
-        <div v-else-if="mapError && !mapReady" class="map-status map-status-err">
-          <p class="map-err-msg">{{ mapError }}</p>
-        </div>
-      </div>
-      <p v-else class="tip">当前离线：不请求在线地图。轨迹与事件仍保存在本机；恢复网络后会自动尝试加载地图与轨迹线。</p>
-      <p v-if="mapDisplayReady && (hiddenPathPointCount || hiddenEventCount)" class="tip">
-        轻量模式：地图仅渲染最近 {{ MAX_PATH_POINTS_ON_MAP }} 个轨迹点与 {{ MAX_EVENT_MARKERS_ON_MAP }} 个事件点（已省略轨迹 {{ hiddenPathPointCount }}、事件 {{ hiddenEventCount }}）。
+      <p class="tip">
+        地图按需加载：默认不拉取高德脚本，避免首进页面卡死。需要看图时点击下方按钮；定位某条事件时会自动打开地图。
       </p>
+      <van-button v-if="online && !mapRequested" block type="primary" plain @click="requestMapPanel">显示地图（加载高德）</van-button>
+      <PatrolMapPanel
+        v-if="mapRequested && online"
+        ref="mapPanelRef"
+        :online="online"
+        :patrol-points="patrolPoints"
+        :patrol-events="patrolEvents"
+      />
+      <p v-else-if="!online" class="tip">离线不加载在线地图；轨迹与事件仍保存在本机。</p>
     </section>
 
     <section class="card events-panel">
@@ -698,30 +520,35 @@ watch(
           />
         </van-dropdown-menu>
       </div>
-      <div v-if="!sortedEvents.length" class="empty">暂无事件记录</div>
-      <div v-else class="event-list">
-        <article
-          v-for="ev in displayedEvents"
-          :key="ev.local_id"
-          class="event-item"
-          :class="{ focused: focusedEventLocalId === ev.local_id }"
-          @click="locateEventOnMap(ev)"
-        >
-          <div class="line1">
-            <span>{{ eventTypeMeta(ev.type).emoji }} {{ eventTypeMeta(ev.type).text }}</span>
-            <span>{{ formatTime(ev.captured_at) }}</span>
-          </div>
-          <p class="line2">位置：{{ Number(ev.lat).toFixed(6) }}, {{ Number(ev.lng).toFixed(6) }}</p>
-          <p class="line3">备注：{{ ev.note || "无" }}</p>
-          <div class="row-actions">
-            <van-button size="mini" type="primary" plain @click.stop="locateEventOnMap(ev)">定位</van-button>
-            <van-button size="mini" type="danger" plain @click.stop="removeEvent(ev)">删除</van-button>
-          </div>
-        </article>
-        <p v-if="hiddenEventListCount > 0" class="tip">
-          事件列表仅显示最近 {{ MAX_EVENTS_IN_LIST }} 条，已省略 {{ hiddenEventListCount }} 条以提升流畅度。
-        </p>
+      <div v-if="detailsLoading" class="empty loading-box">
+        <van-loading vertical size="24px">载入轨迹与事件…</van-loading>
       </div>
+      <template v-else>
+        <div v-if="!sortedEvents.length" class="empty">暂无事件记录</div>
+        <div v-else class="event-list">
+          <article
+            v-for="ev in displayedEvents"
+            :key="ev.local_id"
+            class="event-item"
+            :class="{ focused: focusedEventLocalId === ev.local_id }"
+            @click="locateEventOnMap(ev)"
+          >
+            <div class="line1">
+              <span>{{ eventTypeMeta(ev.type).emoji }} {{ eventTypeMeta(ev.type).text }}</span>
+              <span>{{ formatTime(ev.captured_at) }}</span>
+            </div>
+            <p class="line2">位置：{{ Number(ev.lat).toFixed(6) }}, {{ Number(ev.lng).toFixed(6) }}</p>
+            <p class="line3">备注：{{ ev.note || "无" }}</p>
+            <div class="row-actions">
+              <van-button size="mini" type="primary" plain @click.stop="locateEventOnMap(ev)">定位</van-button>
+              <van-button size="mini" type="danger" plain @click.stop="removeEvent(ev)">删除</van-button>
+            </div>
+          </article>
+          <p v-if="hiddenEventListCount > 0" class="tip">
+            事件列表仅显示最近 {{ MAX_EVENTS_IN_LIST }} 条，已省略 {{ hiddenEventListCount }} 条。
+          </p>
+        </div>
+      </template>
     </section>
 
     <van-popup v-model:show="eventPopupVisible" position="bottom" round :style="{ height: '72%' }">
@@ -794,62 +621,13 @@ watch(
   margin: 0;
   font-size: 16px;
 }
-.sub {
-  font-size: 12px;
-  color: #969799;
-}
-.head-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-.map-frozen-tip {
-  margin-top: 8px;
-  padding: 12px;
-  background: #f7f8fa;
-  border-radius: 10px;
-  border: 1px dashed #c8c9cc;
-}
-.map-frozen-tip code {
-  font-size: 11px;
-  padding: 0 4px;
-  background: #fff;
-  border-radius: 4px;
-}
-.map-shell {
-  position: relative;
-  margin-top: 8px;
-  min-height: 260px;
-}
-.map-wrap {
-  height: 260px;
-  border-radius: 10px;
-  overflow: hidden;
-}
-.map-status {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(246, 247, 251, 0.92);
+.sub-label {
+  margin: 0 0 6px;
+  font-size: 14px;
   color: #646566;
-  font-size: 13px;
-  border-radius: 10px;
-  pointer-events: none;
 }
-.map-status-err {
-  flex-direction: column;
-  gap: 10px;
-  pointer-events: auto;
-  padding: 12px;
-  text-align: center;
-}
-.map-err-msg {
-  margin: 0;
-  font-size: 12px;
-  color: #ee0a24;
-  line-height: 1.5;
+.map-box .tip:first-of-type {
+  margin-top: 4px;
 }
 .filters {
   margin: 8px 0;
@@ -858,6 +636,11 @@ watch(
   color: #969799;
   font-size: 13px;
   padding: 8px 0;
+}
+.loading-box {
+  display: flex;
+  justify-content: center;
+  padding: 24px 0;
 }
 .event-list {
   display: grid;
@@ -894,11 +677,6 @@ watch(
 }
 .event-form h3 {
   margin: 0 0 8px;
-}
-.sub-label {
-  margin: 0 0 6px;
-  font-size: 14px;
-  color: #646566;
 }
 .type-radios {
   margin: 4px 0 10px;

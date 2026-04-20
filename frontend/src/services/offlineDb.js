@@ -123,43 +123,164 @@ export async function deleteRecord(storeName, key) {
   await txPromise(tx);
 }
 
-async function readAllFromCursor(index, keyRange) {
+function indexCount(index, keyRange) {
   return new Promise((resolve, reject) => {
-    const acc = [];
-    const req = index.openCursor(keyRange);
-    req.onsuccess = () => {
-      const cur = req.result;
-      if (cur) {
-        acc.push(cur.value);
-        cur.continue();
-      } else {
-        resolve(acc);
-      }
-    };
+    const req = index.count(keyRange);
+    req.onsuccess = () => resolve(Number(req.result) || 0);
     req.onerror = () => reject(req.error);
   });
 }
 
 /**
- * 按任务读取巡护轨迹点（有 by_task 索引时只扫该任务；按时间排序后截断，避免上万点拖慢界面）。
+ * 轨迹点：按 by_task 只读取「末尾 maxRows 条」（主键序≈时间序），避免数万点一次性进内存导致页面卡死。
+ */
+async function readPatrolPointsTail(index, keyRange, maxRows) {
+  const total = await indexCount(index, keyRange);
+  if (total === 0) return { rows: [], total: 0 };
+  const skip = Math.max(0, total - maxRows);
+  const rows = [];
+  await new Promise((resolve, reject) => {
+    const req = index.openCursor(keyRange);
+    let needAdvance = skip > 0;
+    req.onerror = () => reject(req.error);
+    req.onsuccess = () => {
+      const cur = req.result;
+      if (needAdvance) {
+        needAdvance = false;
+        if (!cur) {
+          resolve();
+          return;
+        }
+        cur.advance(skip);
+        return;
+      }
+      if (!cur) {
+        resolve();
+        return;
+      }
+      rows.push(cur.value);
+      if (rows.length >= Math.min(maxRows, total)) {
+        resolve();
+        return;
+      }
+      cur.continue();
+    };
+  });
+  rows.sort((a, b) => new Date(a.captured_at || 0).getTime() - new Date(b.captured_at || 0).getTime());
+  return { rows, total };
+}
+
+/**
+ * 事件：按 by_task 用 prev 游标只读「最新 maxRows 条」，O(maxRows) 不扫全表。
+ */
+async function readPatrolEventsNewest(index, keyRange, maxRows) {
+  const total = await indexCount(index, keyRange);
+  if (total === 0) return { rows: [], total: 0 };
+  const take = Math.min(maxRows, total);
+  const rows = [];
+  await new Promise((resolve, reject) => {
+    const req = index.openCursor(keyRange, "prev");
+    req.onerror = () => reject(req.error);
+    req.onsuccess = () => {
+      const cur = req.result;
+      if (!cur || rows.length >= take) {
+        resolve();
+        return;
+      }
+      rows.push(cur.value);
+      cur.continue();
+    };
+  });
+  rows.sort((a, b) => new Date(b.captured_at || 0).getTime() - new Date(a.captured_at || 0).getTime());
+  return { rows, total };
+}
+
+/** 全量读取（导出用）；大表时分片让出主线程，减轻「无响应」 */
+async function readAllFromCursorYielding(index, keyRange, yieldEvery = 400) {
+  return new Promise((resolve, reject) => {
+    const acc = [];
+    let n = 0;
+    const req = index.openCursor(keyRange);
+    req.onerror = () => reject(req.error);
+    req.onsuccess = () => {
+      const cur = req.result;
+      if (!cur) {
+        resolve(acc);
+        return;
+      }
+      acc.push(cur.value);
+      n += 1;
+      if (n % yieldEvery === 0) {
+        setTimeout(() => cur.continue(), 0);
+      } else {
+        cur.continue();
+      }
+    };
+  });
+}
+
+/** 当前任务轨迹点总数（仅 count，不全量读） */
+export async function countPatrolPointsForTask(taskLocalId) {
+  if (!taskLocalId) return 0;
+  const db = await openDb();
+  const tx = db.transaction(STORE_PATROL_POINTS, "readonly");
+  const store = tx.objectStore(STORE_PATROL_POINTS);
+  if (!store.indexNames.contains("by_task")) {
+    const req = store.getAll();
+    const rows = await new Promise((resolve, reject) => {
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+    });
+    await txPromise(tx);
+    return rows.filter((x) => x.task_local_id === taskLocalId).length;
+  }
+  const n = await indexCount(store.index("by_task"), IDBKeyRange.only(taskLocalId));
+  await txPromise(tx);
+  return n;
+}
+
+/** 当前任务事件总数（仅 count） */
+export async function countPatrolEventsForTask(taskLocalId) {
+  if (!taskLocalId) return 0;
+  const db = await openDb();
+  const tx = db.transaction(STORE_PATROL_EVENTS, "readonly");
+  const store = tx.objectStore(STORE_PATROL_EVENTS);
+  if (!store.indexNames.contains("by_task")) {
+    const req = store.getAll();
+    const rows = await new Promise((resolve, reject) => {
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+    });
+    await txPromise(tx);
+    return rows.filter((x) => x.task_local_id === taskLocalId).length;
+  }
+  const n = await indexCount(store.index("by_task"), IDBKeyRange.only(taskLocalId));
+  await txPromise(tx);
+  return n;
+}
+
+/**
+ * 按任务读取巡护轨迹点（有 by_task 索引时只读末尾 maxRows 条，不全表加载）。
  */
 export async function getPatrolPointsForTask(taskLocalId, { maxRows = 2500 } = {}) {
   if (!taskLocalId) return { rows: [], total: 0 };
   const db = await openDb();
   const tx = db.transaction(STORE_PATROL_POINTS, "readonly");
   const store = tx.objectStore(STORE_PATROL_POINTS);
-  let rows;
+  const keyRange = IDBKeyRange.only(taskLocalId);
   if (store.indexNames.contains("by_task")) {
-    rows = await readAllFromCursor(store.index("by_task"), IDBKeyRange.only(taskLocalId));
-  } else {
-    const req = store.getAll();
-    rows = await new Promise((resolve, reject) => {
-      req.onsuccess = () => resolve(req.result || []);
-      req.onerror = () => reject(req.error);
-    });
-    rows = rows.filter((x) => x.task_local_id === taskLocalId);
+    const idx = store.index("by_task");
+    const res = await readPatrolPointsTail(idx, keyRange, maxRows);
+    await txPromise(tx);
+    return res;
   }
+  const req = store.getAll();
+  let rows = await new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  });
   await txPromise(tx);
+  rows = rows.filter((x) => x.task_local_id === taskLocalId);
   rows.sort((a, b) => new Date(a.captured_at || 0).getTime() - new Date(b.captured_at || 0).getTime());
   const total = rows.length;
   return { rows: rows.slice(-maxRows), total };
@@ -173,18 +294,20 @@ export async function getPatrolEventsForTask(taskLocalId, { maxRows = 800 } = {}
   const db = await openDb();
   const tx = db.transaction(STORE_PATROL_EVENTS, "readonly");
   const store = tx.objectStore(STORE_PATROL_EVENTS);
-  let rows;
+  const keyRange = IDBKeyRange.only(taskLocalId);
   if (store.indexNames.contains("by_task")) {
-    rows = await readAllFromCursor(store.index("by_task"), IDBKeyRange.only(taskLocalId));
-  } else {
-    const req = store.getAll();
-    rows = await new Promise((resolve, reject) => {
-      req.onsuccess = () => resolve(req.result || []);
-      req.onerror = () => reject(req.error);
-    });
-    rows = rows.filter((x) => x.task_local_id === taskLocalId);
+    const idx = store.index("by_task");
+    const res = await readPatrolEventsNewest(idx, keyRange, maxRows);
+    await txPromise(tx);
+    return res;
   }
+  const req = store.getAll();
+  let rows = await new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  });
   await txPromise(tx);
+  rows = rows.filter((x) => x.task_local_id === taskLocalId);
   rows.sort((a, b) => new Date(b.captured_at || 0).getTime() - new Date(a.captured_at || 0).getTime());
   const total = rows.length;
   return { rows: rows.slice(0, maxRows), total };
@@ -195,9 +318,10 @@ export async function getPatrolEventsForTaskAll(taskLocalId) {
   const db = await openDb();
   const tx = db.transaction(STORE_PATROL_EVENTS, "readonly");
   const store = tx.objectStore(STORE_PATROL_EVENTS);
+  const keyRange = IDBKeyRange.only(taskLocalId);
   let rows;
   if (store.indexNames.contains("by_task")) {
-    rows = await readAllFromCursor(store.index("by_task"), IDBKeyRange.only(taskLocalId));
+    rows = await readAllFromCursorYielding(store.index("by_task"), keyRange, 400);
   } else {
     const req = store.getAll();
     rows = await new Promise((resolve, reject) => {
