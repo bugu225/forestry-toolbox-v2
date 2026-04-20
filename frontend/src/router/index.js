@@ -3,6 +3,7 @@ import { createRouter, createWebHistory } from "vue-router";
 import HomeView from "../views/HomeView.vue";
 import IdentifyView from "../views/IdentifyView.vue";
 import LoginView from "../views/LoginView.vue";
+import PatrolView from "../views/PatrolView.vue";
 import QaView from "../views/QaView.vue";
 import { useAuthStore } from "../stores/auth";
 
@@ -11,6 +12,7 @@ const routes = [
   { path: "/", name: "home", component: HomeView, meta: { requiresAuth: true } },
   { path: "/identify", name: "identify", component: IdentifyView, meta: { requiresAuth: true } },
   { path: "/qa", name: "qa", component: QaView, meta: { requiresAuth: true } },
+  { path: "/patrol", name: "patrol", component: PatrolView, meta: { requiresAuth: true } },
 ];
 
 const router = createRouter({

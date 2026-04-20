@@ -32,7 +32,7 @@ function goIdentify() {
 }
 
 function goPatrol() {
-  showToast({ message: "正在开发中", position: "middle" });
+  router.push({ name: "patrol" });
 }
 
 function logout() {
@@ -46,6 +46,42 @@ function onSimulateOfflineChange(checked) {
     message: checked ? "已开启模拟断网" : "已恢复为真实网络状态",
     position: "bottom",
   });
+}
+
+function requestLocationPermission() {
+  if (!navigator.geolocation) {
+    showToast({ message: "当前设备不支持定位能力", position: "middle" });
+    return;
+  }
+  if (window.isSecureContext === false) {
+    showToast({
+      message: "当前页面不是安全上下文，浏览器可能拒绝定位。请改用 HTTPS 或 localhost 访问。",
+      position: "middle",
+    });
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(
+    () => {
+      showToast({ message: "定位权限已可用", position: "middle" });
+    },
+    (error) => {
+      const code = Number(error?.code || 0);
+      if (code === 1) {
+        showToast({ message: "您已拒绝定位权限，请在系统或浏览器设置中手动开启。", position: "middle" });
+        return;
+      }
+      if (code === 2) {
+        showToast({ message: "定位不可用，请检查手机定位服务（GPS）是否开启。", position: "middle" });
+        return;
+      }
+      if (code === 3) {
+        showToast({ message: "定位请求超时，请重试。", position: "middle" });
+        return;
+      }
+      showToast({ message: "定位权限申请失败，请稍后重试。", position: "middle" });
+    },
+    { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
+  );
 }
 </script>
 
@@ -84,6 +120,7 @@ function onSimulateOfflineChange(checked) {
                 />
               </template>
             </van-cell>
+            <van-button type="primary" plain block @click="requestLocationPermission">申请定位权限</van-button>
             <van-button class="more-logout" type="danger" block round @click="logout">退出登录</van-button>
           </div>
         </van-collapse-item>

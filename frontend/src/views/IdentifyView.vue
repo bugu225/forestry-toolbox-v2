@@ -358,6 +358,23 @@ function applyCurrentTimeToMeta() {
   metaForm.datetimeLocal = toDatetimeLocalValue(new Date());
 }
 
+function formatGeoError(error, fallback = "获取位置失败，可手动输入经纬度") {
+  const code = Number(error?.code || 0);
+  if (code === 1) {
+    return "定位权限被拒绝：请在系统与浏览器设置中允许位置权限后重试。";
+  }
+  if (code === 2) {
+    return "定位不可用：请确认手机定位服务（GPS）已开启，并在室外或网络较好环境重试。";
+  }
+  if (code === 3) {
+    return "定位超时：请稍后重试，或关闭省电模式后再试。";
+  }
+  if (window.isSecureContext === false) {
+    return "当前页面不是安全上下文，浏览器可能拒绝定位。请改用 HTTPS 或 localhost 访问。";
+  }
+  return fallback;
+}
+
 function fillCurrentLocation() {
   if (!navigator.geolocation) {
     showFailToast("当前环境不支持定位");
@@ -376,9 +393,9 @@ function fillCurrentLocation() {
       metaForm.lat = la.toFixed(1);
       metaForm.lng = lo.toFixed(1);
     },
-    () => {
+    (error) => {
       metaLocationLoading.value = false;
-      showFailToast("获取位置失败，可手动输入经纬度");
+      showFailToast(formatGeoError(error));
     },
     { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 }
   );
@@ -398,6 +415,12 @@ function formatIdentifyApiError(err) {
   if (status === 404) {
     return "识图接口不存在，请确认后端已启动且前端代理配置正确。";
   }
+  if (status === 413) {
+    return "上传图片过大，被网关拒绝（常见为 Nginx 默认仅允许 1MB 请求体）。请在服务器 Nginx 的 server 块中设置 client_max_body_size 20m; 并重载 Nginx，或换用较小/较低分辨率照片。";
+  }
+  if (status === 414) {
+    return "请求 URL 或数据过长被网关拒绝，请换用较小图片或调整服务器限制。";
+  }
   if (status >= 500) {
     return "服务端暂时不可用，请稍后再试。";
   }
@@ -408,6 +431,9 @@ function formatIdentifyApiError(err) {
   }
   if (/status code 401/i.test(raw)) {
     return "登录已失效或未携带有效令牌，请退出本页后重新登录，再使用云端识图。";
+  }
+  if (!err?.response) {
+    return "无法连接识图服务（无响应）。请确认与登录使用同一站点地址、HTTPS 与 API 协议一致；若已配置 Nginx 反代，请检查 client_max_body_size 与后端是否运行。";
   }
   return "识别失败，请检查网络与登录状态后重试。";
 }
