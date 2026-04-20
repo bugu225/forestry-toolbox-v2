@@ -1,7 +1,7 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
-import { showFailToast, showSuccessToast } from "vant";
+import { showFailToast, showSuccessToast, showToast } from "vant";
 import { loadAmapSdk } from "../services/amapLoader";
 import {
   deleteRecord,
@@ -19,6 +19,11 @@ const MAX_PATH_POINTS_ON_MAP = 500;
 const MAX_EVENT_MARKERS_ON_MAP = 120;
 const MAX_PATROL_POINTS_UI = 2500;
 const MAX_PATROL_EVENTS_UI = 800;
+/**
+ * 为 true 时完全冻结高德地图：不请求 SDK、不创建地图、不渲染轨迹点。
+ * 用于排查「进入巡护页卡顿」是否与地图相关；确认后改回 false 并重新构建部署。
+ */
+const PATROL_MAP_FROZEN = true;
 const HENAN_BOUNDS = {
   minLng: 110.35,
   maxLng: 116.65,
@@ -68,8 +73,10 @@ const eventDraft = reactive({
   audioDataUrl: "",
 });
 
-/** 地图实例已就绪（仅在线时才会创建） */
-const mapDisplayReady = computed(() => Boolean(map) && mapReady.value && online.value);
+/** 地图实例已就绪（仅在线且未冻结时才会创建） */
+const mapDisplayReady = computed(
+  () => !PATROL_MAP_FROZEN && Boolean(map) && mapReady.value && online.value
+);
 const sortedEvents = computed(() => {
   const copied = [...patrolEvents.value];
   copied.sort((a, b) => {
@@ -387,6 +394,10 @@ function pointToLngLat(row) {
 
 function locateEventOnMap(row) {
   focusedEventLocalId.value = row.local_id;
+  if (PATROL_MAP_FROZEN) {
+    showToast({ message: "地图模块已暂时关闭（性能排查），无法在地图上定位。", position: "bottom" });
+    return;
+  }
   if (!row || !map || !mapDisplayReady.value) {
     if (online.value && row && !mapReady.value) {
       showFailToast("请等待地图加载完成后再定位");
@@ -411,7 +422,7 @@ function destroyMap() {
 }
 
 function scheduleRenderMap() {
-  if (!map || !online.value) return;
+  if (PATROL_MAP_FROZEN || !map || !online.value) return;
   if (renderMapRaf) cancelAnimationFrame(renderMapRaf);
   renderMapRaf = requestAnimationFrame(() => {
     renderMapRaf = 0;
@@ -428,7 +439,7 @@ function scheduleIdle(fn) {
 }
 
 async function ensureMap() {
-  if (!online.value || map) return;
+  if (PATROL_MAP_FROZEN || !online.value || map) return;
   for (let i = 0; i < 12 && online.value && !mapWrapRef.value; i += 1) {
     await nextTick();
   }
@@ -467,13 +478,17 @@ async function ensureMap() {
 }
 
 async function initMapSilently() {
-  if (!online.value || map) return;
+  if (PATROL_MAP_FROZEN || !online.value || map) return;
   await ensureMap();
   await nextTick();
   scheduleRenderMap();
 }
 
 async function initMapOnDemand() {
+  if (PATROL_MAP_FROZEN) {
+    showToast({ message: "地图已冻结（性能排查），暂不可手动加载。", position: "bottom" });
+    return;
+  }
   mapError.value = "";
   if (!online.value) {
     showFailToast("当前离线，无法加载在线地图");
@@ -497,7 +512,7 @@ function clearMapObjects() {
 }
 
 function renderMap() {
-  if (!map || !online.value) return;
+  if (PATROL_MAP_FROZEN || !map || !online.value) return;
   clearMapObjects();
   const pointsForMap = patrolPoints.value.slice(-MAX_PATH_POINTS_ON_MAP);
   if (pointsForMap.length >= 2) {
@@ -539,6 +554,7 @@ function renderMap() {
 
 function handleWindowOnline() {
   networkStore.setNavigatorOnline(true);
+  if (PATROL_MAP_FROZEN) return;
   if (map && mapReady.value) {
     nextTick(() => scheduleRenderMap());
   } else if (online.value) {
@@ -555,7 +571,7 @@ onMounted(async () => {
   if (recording.value) startTimer();
   window.addEventListener("online", handleWindowOnline);
   window.addEventListener("offline", handleWindowOffline);
-  if (online.value) {
+  if (online.value && !PATROL_MAP_FROZEN) {
     scheduleIdle(() => initMapSilently());
   }
 });
@@ -572,7 +588,7 @@ watch(online, (isOnline) => {
   if (!isOnline) {
     destroyMap();
     mapError.value = "";
-  } else {
+  } else if (!PATROL_MAP_FROZEN) {
     scheduleIdle(() => {
       if (online.value) initMapSilently();
     });
@@ -624,22 +640,31 @@ watch(
     <section class="card map-box">
       <div class="head">
         <h3>地图轨迹可视化</h3>
-        <div class="head-actions">
-          <span class="sub">{{
-            !online ? "离线不显示地图" : mapDisplayReady ? "已加载高德地图" : mapLoading ? "地图加载中…" : "联网后将自动加载"
-          }}</span>
-          <van-button
-            v-if="online && !mapLoading && !mapDisplayReady"
-            size="mini"
-            type="primary"
-            plain
-            @click="initMapOnDemand"
-          >
-            {{ mapError ? "重试" : "立即加载" }}
-          </van-button>
-        </div>
+        <template v-if="!PATROL_MAP_FROZEN">
+          <div class="head-actions">
+            <span class="sub">{{
+              !online ? "离线不显示地图" : mapDisplayReady ? "已加载高德地图" : mapLoading ? "地图加载中…" : "联网后将自动加载"
+            }}</span>
+            <van-button
+              v-if="online && !mapLoading && !mapDisplayReady"
+              size="mini"
+              type="primary"
+              plain
+              @click="initMapOnDemand"
+            >
+              {{ mapError ? "重试" : "立即加载" }}
+            </van-button>
+          </div>
+        </template>
+        <span v-else class="sub">地图已临时关闭（性能排查）</span>
       </div>
-      <div v-if="online" class="map-shell">
+      <div v-if="PATROL_MAP_FROZEN" class="map-frozen-tip">
+        <p class="tip">
+          已冻结高德地图：不加载 SDK、不初始化地图。开始/结束巡护、采样、事件列表与导出仍可用；用于对比是否因地图导致卡顿。恢复请将
+          <code>PatrolView.vue</code> 中 <code>PATROL_MAP_FROZEN</code> 改为 <code>false</code> 后重新构建。
+        </p>
+      </div>
+      <div v-else-if="online" class="map-shell">
         <div ref="mapWrapRef" class="map-wrap" />
         <div v-if="mapLoading" class="map-status">地图加载中…</div>
         <div v-else-if="mapError && !mapReady" class="map-status map-status-err">
@@ -702,16 +727,7 @@ watch(
     <van-popup v-model:show="eventPopupVisible" position="bottom" round :style="{ height: '72%' }">
       <div class="event-form">
         <h3>记录巡护事件</h3>
-        <van-field
-          v-model="eventDraft.type"
-          label="事件类型"
-          is-link
-          readonly
-          :value="eventTypeMeta(eventDraft.type).text"
-          @click="
-            showFailToast('请在下方单选类型：病虫害 / 火情 / 盗伐 / 其他异常')
-          "
-        />
+        <p class="sub-label">事件类型</p>
         <van-radio-group v-model="eventDraft.type" direction="horizontal" class="type-radios">
           <van-radio v-for="x in eventTypeOptions" :key="x.value" :name="x.value">{{ x.text }}</van-radio>
         </van-radio-group>
@@ -786,6 +802,19 @@ watch(
   display: inline-flex;
   align-items: center;
   gap: 8px;
+}
+.map-frozen-tip {
+  margin-top: 8px;
+  padding: 12px;
+  background: #f7f8fa;
+  border-radius: 10px;
+  border: 1px dashed #c8c9cc;
+}
+.map-frozen-tip code {
+  font-size: 11px;
+  padding: 0 4px;
+  background: #fff;
+  border-radius: 4px;
 }
 .map-shell {
   position: relative;
@@ -865,6 +894,11 @@ watch(
 }
 .event-form h3 {
   margin: 0 0 8px;
+}
+.sub-label {
+  margin: 0 0 6px;
+  font-size: 14px;
+  color: #646566;
 }
 .type-radios {
   margin: 4px 0 10px;

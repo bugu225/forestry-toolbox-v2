@@ -18,6 +18,8 @@ export default defineConfig(({ mode }) => {
     server: {
       host: '0.0.0.0',
       port: 5173,
+      // 手机经 ngrok / cpolar / Cloudflare Tunnel 等 HTTPS 域名访问本机 dev 时，须放行 Host，否则页面打不开
+      allowedHosts: true,
       https: useHttps
         ? hasCustomCert
           ? {

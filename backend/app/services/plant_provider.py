@@ -37,11 +37,11 @@ def _max_confidence(top_k: list) -> float:
     return max(float(x.get("confidence") or 0) for x in top_k)
 
 
-def _build_user_notice_zh(top_k: list, provider: str) -> str | None:
+def _build_user_notice_zh(top_k: list) -> str | None:
     """在「仍有候选列表」但需弱化信任时使用（真实百度且置信度偏低）。"""
-    mx = _max_confidence(top_k)
     if not top_k:
         return None
+    mx = _max_confidence(top_k)
 
     if mx < 0.22:
         return (
@@ -184,7 +184,7 @@ def identify_plant(image_name: str, image_base64: str | None):
             if errors:
                 provider += ";partial"
 
-            notice = _build_user_notice_zh(top_k, provider)
+            notice = _build_user_notice_zh(top_k)
             return top_k, provider, False, latency_ms, notice
         except Exception as exc:  # noqa: BLE001
             last_error = exc
