@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onMounted, reactive, ref } from "vue";
+import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 import { showFailToast, showSuccessToast } from "vant";
 import { loadAmapSdk } from "../services/amapLoader";
@@ -7,6 +7,14 @@ import { deleteRecord, getAllRecords, putRecord, stores } from "../services/offl
 import { useNetworkStore } from "../stores/network";
 
 const AUTO_SAMPLE_MS = 5 * 60 * 1000;
+const MAX_PATH_POINTS_ON_MAP = 500;
+const MAX_EVENT_MARKERS_ON_MAP = 120;
+const HENAN_BOUNDS = {
+  minLng: 110.35,
+  maxLng: 116.65,
+  minLat: 31.38,
+  maxLat: 36.37,
+};
 const networkStore = useNetworkStore();
 const { effectiveOnline: online } = storeToRefs(networkStore);
 
@@ -26,6 +34,9 @@ let timerId = null;
 let map = null;
 let polyline = null;
 let eventMarkers = [];
+const mapReady = ref(false);
+const mapLoading = ref(false);
+const mapError = ref("");
 const eventTypeOptions = [
   { text: "病虫害", value: "pest", emoji: "●" },
   { text: "火情", value: "fire", emoji: "▲" },
@@ -43,7 +54,7 @@ const eventDraft = reactive({
   audioDataUrl: "",
 });
 
-const hasMap = computed(() => online.value && Boolean(map));
+const hasMap = computed(() => online.value && mapReady.value && Boolean(map));
 const sortedEvents = computed(() => {
   const copied = [...patrolEvents.value];
   copied.sort((a, b) => {
@@ -56,6 +67,8 @@ const sortedEvents = computed(() => {
 });
 const pointCount = computed(() => patrolPoints.value.length);
 const eventCount = computed(() => patrolEvents.value.length);
+const hiddenPathPointCount = computed(() => Math.max(0, patrolPoints.value.length - MAX_PATH_POINTS_ON_MAP));
+const hiddenEventCount = computed(() => Math.max(0, patrolEvents.value.length - MAX_EVENT_MARKERS_ON_MAP));
 
 function uid(prefix) {
   return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
@@ -89,6 +102,19 @@ function formatGeoError(error, fallback = "无法获取定位") {
     return "当前页面不是安全上下文，浏览器可能拒绝定位。请改用 HTTPS 或 localhost 访问。";
   }
   return fallback;
+}
+
+function isWithinHenan(lat, lng) {
+  const la = Number(lat);
+  const lo = Number(lng);
+  if (!Number.isFinite(la) || !Number.isFinite(lo)) return false;
+  return lo >= HENAN_BOUNDS.minLng && lo <= HENAN_BOUNDS.maxLng && la >= HENAN_BOUNDS.minLat && la <= HENAN_BOUNDS.maxLat;
+}
+
+function assertHenanScope(lat, lng) {
+  if (isWithinHenan(lat, lng)) return true;
+  showFailToast("当前位置超出河南省巡护范围，请在河南省范围内使用巡护地图。");
+  return false;
 }
 
 async function getCurrentPosition() {
@@ -141,6 +167,7 @@ async function samplePoint(manual = false) {
   if (!currentTask.value) return;
   try {
     const pos = await getCurrentPosition();
+    if (!assertHenanScope(pos.lat, pos.lng)) return;
     await putRecord(stores.patrolPoints, {
       local_id: uid("patrol_point"),
       task_local_id: currentTask.value.local_id,
@@ -211,6 +238,7 @@ async function openEventPopup() {
   }
   try {
     const pos = await getCurrentPosition();
+    if (!assertHenanScope(pos.lat, pos.lng)) return;
     eventDraft.type = "other";
     eventDraft.note = "";
     eventDraft.lat = pos.lat.toFixed(6);
@@ -250,6 +278,7 @@ async function onPickAudio(ev) {
 
 async function saveEvent() {
   if (!currentTask.value) return;
+  if (!assertHenanScope(eventDraft.lat, eventDraft.lng)) return;
   eventBusy.value = true;
   try {
     await putRecord(stores.patrolEvents, {
@@ -321,14 +350,38 @@ function locateEventOnMap(row) {
 async function ensureMap() {
   if (!online.value || map || !mapWrapRef.value) return;
   try {
+    mapLoading.value = true;
+    mapError.value = "";
     const AMap = await loadAmapSdk();
     map = new AMap.Map(mapWrapRef.value, {
-      zoom: 14,
-      center: [116.397428, 39.90923],
+      zoom: 11,
+      center: [113.65, 34.76],
+      viewMode: "2D",
+      pitchEnable: false,
+      rotateEnable: false,
+      jogEnable: false,
+      zooms: [6, 18],
     });
+    const bounds = new AMap.Bounds([HENAN_BOUNDS.minLng, HENAN_BOUNDS.minLat], [HENAN_BOUNDS.maxLng, HENAN_BOUNDS.maxLat]);
+    map.setLimitBounds(bounds);
+    mapReady.value = true;
   } catch (error) {
-    showFailToast(error?.message || "地图加载失败");
+    mapReady.value = false;
+    mapError.value = error?.message || "地图加载失败";
+    showFailToast(mapError.value);
+  } finally {
+    mapLoading.value = false;
   }
+}
+
+async function initMapOnDemand() {
+  if (!online.value) {
+    showFailToast("当前离线，无法加载在线地图");
+    return;
+  }
+  await ensureMap();
+  await nextTick();
+  renderMap();
 }
 
 function clearMapObjects() {
@@ -346,30 +399,37 @@ function clearMapObjects() {
 function renderMap() {
   if (!map || !online.value) return;
   clearMapObjects();
-  if (patrolPoints.value.length >= 2) {
+  const pointsForMap = patrolPoints.value.slice(-MAX_PATH_POINTS_ON_MAP);
+  if (pointsForMap.length >= 2) {
     const AMap = window.AMap;
-    const path = patrolPoints.value.map(pointToLngLat);
+    const path = pointsForMap.map(pointToLngLat);
     polyline = new AMap.Polyline({
       path,
       strokeColor: "#1989fa",
-      strokeWeight: 6,
+      strokeWeight: 5,
       lineJoin: "round",
       lineCap: "round",
     });
     map.add(polyline);
-    map.setFitView([polyline], false, [60, 40, 40, 40]);
+    map.setCenter(path[path.length - 1]);
   }
   if (patrolEvents.value.length) {
     const AMap = window.AMap;
-    eventMarkers = patrolEvents.value.map((ev) => {
+    const eventsForMap = patrolEvents.value.slice(0, MAX_EVENT_MARKERS_ON_MAP);
+    eventMarkers = eventsForMap.map((ev) => {
       const meta = eventTypeMeta(ev.type);
-      const marker = new AMap.Marker({
+      const marker = new AMap.CircleMarker({
         position: pointToLngLat(ev),
-        title: `${meta.text} ${formatTime(ev.captured_at)}`,
-        label: { content: `<div class="patrol-map-label">${meta.emoji}</div>`, direction: "top" },
+        radius: 7,
+        strokeWeight: 1,
+        strokeColor: "#1f1f1f",
+        fillColor: ev.type === "fire" ? "#ee0a24" : ev.type === "pest" ? "#07c160" : ev.type === "logging" ? "#1989fa" : "#ff976a",
+        fillOpacity: 0.95,
+        bubble: true,
       });
       marker.on("click", () => {
         focusedEventLocalId.value = ev.local_id;
+        showSuccessToast(`${meta.emoji} ${meta.text} · ${formatTime(ev.captured_at)}`);
       });
       return marker;
     });
@@ -380,18 +440,24 @@ function renderMap() {
 onMounted(async () => {
   await refreshLocal();
   if (recording.value) startTimer();
-  await ensureMap();
-  await nextTick();
-  renderMap();
   window.addEventListener("online", async () => {
     networkStore.setNavigatorOnline(true);
-    await ensureMap();
-    renderMap();
+    if (mapReady.value) {
+      await ensureMap();
+      renderMap();
+    }
   });
   window.addEventListener("offline", () => {
     networkStore.setNavigatorOnline(false);
   });
 });
+
+watch(
+  () => [patrolPoints.value.length, patrolEvents.value.length, mapReady.value, online.value],
+  () => {
+    if (hasMap.value) renderMap();
+  }
+);
 </script>
 
 <template>
@@ -428,10 +494,28 @@ onMounted(async () => {
     <section class="card map-box">
       <div class="head">
         <h3>地图轨迹可视化</h3>
-        <span class="sub">{{ hasMap ? "已加载高德地图" : online ? "地图加载中/未配置 Key" : "离线模式暂不加载地图" }}</span>
+        <div class="head-actions">
+          <span class="sub">{{ hasMap ? "已加载高德地图" : online ? "未加载（按需）" : "离线模式暂不加载地图" }}</span>
+          <van-button
+            v-if="online && !hasMap"
+            size="mini"
+            type="primary"
+            plain
+            :loading="mapLoading"
+            @click="initMapOnDemand"
+          >
+            加载地图
+          </van-button>
+        </div>
       </div>
-      <div v-if="online" ref="mapWrapRef" class="map-wrap" />
-      <p v-else class="tip">离线下仍持续保存轨迹和事件；联网后自动显示轨迹线与事件点。</p>
+      <div v-if="hasMap" ref="mapWrapRef" class="map-wrap" />
+      <p v-else-if="online" class="tip">
+        {{ mapError || "点击“加载地图”后再查看轨迹线与事件点（优化首屏卡顿）" }}
+      </p>
+      <p v-if="hasMap && (hiddenPathPointCount || hiddenEventCount)" class="tip">
+        轻量模式：地图仅渲染最近 {{ MAX_PATH_POINTS_ON_MAP }} 个轨迹点与 {{ MAX_EVENT_MARKERS_ON_MAP }} 个事件点（已省略轨迹 {{ hiddenPathPointCount }}、事件 {{ hiddenEventCount }}）。
+      </p>
+      <p v-if="!online" class="tip">离线下仍持续保存轨迹和事件；联网后自动显示轨迹线与事件点。</p>
     </section>
 
     <section class="card events-panel">
@@ -560,6 +644,11 @@ onMounted(async () => {
 .sub {
   font-size: 12px;
   color: #969799;
+}
+.head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 .map-wrap {
   margin-top: 8px;
