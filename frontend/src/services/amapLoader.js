@@ -1,5 +1,7 @@
 let amapLoadPromise = null;
 
+const LOAD_TIMEOUT_MS = 45000;
+
 export function loadAmapSdk() {
   if (window.AMap) {
     return Promise.resolve(window.AMap);
@@ -19,17 +21,35 @@ export function loadAmapSdk() {
   };
 
   amapLoadPromise = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      amapLoadPromise = null;
+      reject(new Error("高德地图加载超时，请检查公网与域名白名单后重试"));
+    }, LOAD_TIMEOUT_MS);
+
+    const finish = (err, AMap) => {
+      clearTimeout(timer);
+      if (err) {
+        amapLoadPromise = null;
+        reject(err);
+        return;
+      }
+      resolve(AMap);
+    };
+
     const script = document.createElement("script");
     script.src = `https://webapi.amap.com/maps?v=2.0&key=${encodeURIComponent(key)}`;
     script.async = true;
+    script.crossOrigin = "anonymous";
     script.onload = () => {
       if (window.AMap) {
-        resolve(window.AMap);
+        finish(null, window.AMap);
       } else {
-        reject(new Error("高德地图加载失败"));
+        finish(new Error("高德地图加载失败"));
       }
     };
-    script.onerror = () => reject(new Error("高德地图脚本加载失败"));
+    script.onerror = () => {
+      finish(new Error("高德地图脚本加载失败（请检查网络与域名白名单）"));
+    };
     document.head.appendChild(script);
   });
 

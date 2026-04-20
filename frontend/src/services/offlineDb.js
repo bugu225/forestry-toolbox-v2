@@ -1,5 +1,5 @@
 const DB_NAME = "ftb2_offline_db";
-const DB_VERSION = 6;
+const DB_VERSION = 7;
 
 const STORE_QA_SESSIONS = "qa_sessions";
 const STORE_QA_MESSAGES = "qa_messages";
@@ -52,6 +52,19 @@ function openDb() {
       }
       if (!db.objectStoreNames.contains(STORE_PATROL_EVENTS)) {
         db.createObjectStore(STORE_PATROL_EVENTS, { keyPath: "local_id" });
+      }
+      const upgradeTx = event.target.transaction;
+      if (db.objectStoreNames.contains(STORE_PATROL_POINTS)) {
+        const ps = upgradeTx.objectStore(STORE_PATROL_POINTS);
+        if (!ps.indexNames.contains("by_task")) {
+          ps.createIndex("by_task", "task_local_id", { unique: false });
+        }
+      }
+      if (db.objectStoreNames.contains(STORE_PATROL_EVENTS)) {
+        const es = upgradeTx.objectStore(STORE_PATROL_EVENTS);
+        if (!es.indexNames.contains("by_task")) {
+          es.createIndex("by_task", "task_local_id", { unique: false });
+        }
       }
     };
   });
@@ -108,6 +121,94 @@ export async function deleteRecord(storeName, key) {
   const tx = db.transaction(storeName, "readwrite");
   tx.objectStore(storeName).delete(key);
   await txPromise(tx);
+}
+
+async function readAllFromCursor(index, keyRange) {
+  return new Promise((resolve, reject) => {
+    const acc = [];
+    const req = index.openCursor(keyRange);
+    req.onsuccess = () => {
+      const cur = req.result;
+      if (cur) {
+        acc.push(cur.value);
+        cur.continue();
+      } else {
+        resolve(acc);
+      }
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+/**
+ * 按任务读取巡护轨迹点（有 by_task 索引时只扫该任务；按时间排序后截断，避免上万点拖慢界面）。
+ */
+export async function getPatrolPointsForTask(taskLocalId, { maxRows = 2500 } = {}) {
+  if (!taskLocalId) return { rows: [], total: 0 };
+  const db = await openDb();
+  const tx = db.transaction(STORE_PATROL_POINTS, "readonly");
+  const store = tx.objectStore(STORE_PATROL_POINTS);
+  let rows;
+  if (store.indexNames.contains("by_task")) {
+    rows = await readAllFromCursor(store.index("by_task"), IDBKeyRange.only(taskLocalId));
+  } else {
+    const req = store.getAll();
+    rows = await new Promise((resolve, reject) => {
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+    });
+    rows = rows.filter((x) => x.task_local_id === taskLocalId);
+  }
+  await txPromise(tx);
+  rows.sort((a, b) => new Date(a.captured_at || 0).getTime() - new Date(b.captured_at || 0).getTime());
+  const total = rows.length;
+  return { rows: rows.slice(-maxRows), total };
+}
+
+/**
+ * 按任务读取巡护事件（截断用于列表/地图；导出全量请用 getPatrolEventsForTaskAll）。
+ */
+export async function getPatrolEventsForTask(taskLocalId, { maxRows = 800 } = {}) {
+  if (!taskLocalId) return { rows: [], total: 0 };
+  const db = await openDb();
+  const tx = db.transaction(STORE_PATROL_EVENTS, "readonly");
+  const store = tx.objectStore(STORE_PATROL_EVENTS);
+  let rows;
+  if (store.indexNames.contains("by_task")) {
+    rows = await readAllFromCursor(store.index("by_task"), IDBKeyRange.only(taskLocalId));
+  } else {
+    const req = store.getAll();
+    rows = await new Promise((resolve, reject) => {
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+    });
+    rows = rows.filter((x) => x.task_local_id === taskLocalId);
+  }
+  await txPromise(tx);
+  rows.sort((a, b) => new Date(b.captured_at || 0).getTime() - new Date(a.captured_at || 0).getTime());
+  const total = rows.length;
+  return { rows: rows.slice(0, maxRows), total };
+}
+
+export async function getPatrolEventsForTaskAll(taskLocalId) {
+  if (!taskLocalId) return [];
+  const db = await openDb();
+  const tx = db.transaction(STORE_PATROL_EVENTS, "readonly");
+  const store = tx.objectStore(STORE_PATROL_EVENTS);
+  let rows;
+  if (store.indexNames.contains("by_task")) {
+    rows = await readAllFromCursor(store.index("by_task"), IDBKeyRange.only(taskLocalId));
+  } else {
+    const req = store.getAll();
+    rows = await new Promise((resolve, reject) => {
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+    });
+    rows = rows.filter((x) => x.task_local_id === taskLocalId);
+  }
+  await txPromise(tx);
+  rows.sort((a, b) => new Date(b.captured_at || 0).getTime() - new Date(a.captured_at || 0).getTime());
+  return rows;
 }
 
 export const stores = {

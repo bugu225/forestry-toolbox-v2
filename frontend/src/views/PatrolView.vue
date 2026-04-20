@@ -1,14 +1,24 @@
 <script setup>
-import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 import { showFailToast, showSuccessToast } from "vant";
 import { loadAmapSdk } from "../services/amapLoader";
-import { deleteRecord, getAllRecords, putRecord, stores } from "../services/offlineDb";
+import {
+  deleteRecord,
+  getAllRecords,
+  getPatrolEventsForTask,
+  getPatrolEventsForTaskAll,
+  getPatrolPointsForTask,
+  putRecord,
+  stores,
+} from "../services/offlineDb";
 import { useNetworkStore } from "../stores/network";
 
 const AUTO_SAMPLE_MS = 5 * 60 * 1000;
 const MAX_PATH_POINTS_ON_MAP = 500;
 const MAX_EVENT_MARKERS_ON_MAP = 120;
+const MAX_PATROL_POINTS_UI = 2500;
+const MAX_PATROL_EVENTS_UI = 800;
 const HENAN_BOUNDS = {
   minLng: 110.35,
   maxLng: 116.65,
@@ -21,6 +31,7 @@ const { effectiveOnline: online } = storeToRefs(networkStore);
 const currentTask = ref(null);
 const patrolPoints = ref([]);
 const patrolEvents = ref([]);
+const viewingTaskLocalId = ref("");
 const recording = ref(false);
 const eventPopupVisible = ref(false);
 const eventBusy = ref(false);
@@ -37,6 +48,9 @@ let eventMarkers = [];
 const mapReady = ref(false);
 const mapLoading = ref(false);
 const mapError = ref("");
+const totalPatrolPointCount = ref(0);
+const totalPatrolEventCount = ref(0);
+let renderMapRaf = 0;
 const eventTypeOptions = [
   { text: "病虫害", value: "pest", emoji: "●" },
   { text: "火情", value: "fire", emoji: "▲" },
@@ -54,7 +68,8 @@ const eventDraft = reactive({
   audioDataUrl: "",
 });
 
-const hasMap = computed(() => online.value && mapReady.value && Boolean(map));
+/** 地图实例已就绪（仅在线时才会创建） */
+const mapDisplayReady = computed(() => Boolean(map) && mapReady.value && online.value);
 const sortedEvents = computed(() => {
   const copied = [...patrolEvents.value];
   copied.sort((a, b) => {
@@ -65,8 +80,13 @@ const sortedEvents = computed(() => {
   if (filterType.value === "all") return copied;
   return copied.filter((x) => x.type === filterType.value);
 });
-const pointCount = computed(() => patrolPoints.value.length);
-const eventCount = computed(() => patrolEvents.value.length);
+const MAX_EVENTS_IN_LIST = 200;
+const displayedEvents = computed(() => sortedEvents.value.slice(0, MAX_EVENTS_IN_LIST));
+const hiddenEventListCount = computed(() => Math.max(0, sortedEvents.value.length - MAX_EVENTS_IN_LIST));
+const pointCount = computed(() => totalPatrolPointCount.value);
+const eventCount = computed(() => totalPatrolEventCount.value);
+const uiPointLoaded = computed(() => patrolPoints.value.length);
+const uiEventLoaded = computed(() => patrolEvents.value.length);
 const hiddenPathPointCount = computed(() => Math.max(0, patrolPoints.value.length - MAX_PATH_POINTS_ON_MAP));
 const hiddenEventCount = computed(() => Math.max(0, patrolEvents.value.length - MAX_EVENT_MARKERS_ON_MAP));
 
@@ -138,22 +158,34 @@ async function getCurrentPosition() {
 }
 
 async function refreshLocal() {
-  const [tasks, points, events] = await Promise.all([
-    getAllRecords(stores.patrolTasks),
-    getAllRecords(stores.patrolPoints),
-    getAllRecords(stores.patrolEvents),
-  ]);
-  const active = tasks
-    .filter((x) => x.status === "recording")
-    .sort((a, b) => new Date(b.started_at || 0).getTime() - new Date(a.started_at || 0).getTime())[0];
+  const tasks = await getAllRecords(stores.patrolTasks);
+  const sortedTasks = [...tasks].sort((a, b) => {
+    const ta = new Date(a.started_at || a.ended_at || 0).getTime();
+    const tb = new Date(b.started_at || b.ended_at || 0).getTime();
+    return tb - ta;
+  });
+  const active = sortedTasks.find((x) => x.status === "recording");
+  const latestTask = sortedTasks[0] || null;
+  viewingTaskLocalId.value = (active || latestTask)?.local_id || "";
   currentTask.value = active || null;
-  patrolPoints.value = points
-    .filter((x) => (active ? x.task_local_id === active.local_id : true))
-    .sort((a, b) => new Date(a.captured_at || 0).getTime() - new Date(b.captured_at || 0).getTime());
-  patrolEvents.value = events
-    .filter((x) => (active ? x.task_local_id === active.local_id : true))
-    .sort((a, b) => new Date(b.captured_at || 0).getTime() - new Date(a.captured_at || 0).getTime());
   recording.value = Boolean(active);
+
+  const vid = viewingTaskLocalId.value;
+  if (!vid) {
+    patrolPoints.value = [];
+    patrolEvents.value = [];
+    totalPatrolPointCount.value = 0;
+    totalPatrolEventCount.value = 0;
+    return;
+  }
+  const [pRes, eRes] = await Promise.all([
+    getPatrolPointsForTask(vid, { maxRows: MAX_PATROL_POINTS_UI }),
+    getPatrolEventsForTask(vid, { maxRows: MAX_PATROL_EVENTS_UI }),
+  ]);
+  patrolPoints.value = pRes.rows;
+  totalPatrolPointCount.value = pRes.total;
+  patrolEvents.value = eRes.rows;
+  totalPatrolEventCount.value = eRes.total;
 }
 
 function stopTimer() {
@@ -178,7 +210,7 @@ async function samplePoint(manual = false) {
       source: manual ? "manual" : "auto",
     });
     await refreshLocal();
-    renderMap();
+    scheduleRenderMap();
     if (manual) showSuccessToast("已记录当前轨迹点");
   } catch (error) {
     if (manual) showFailToast(error?.message || "记录轨迹点失败");
@@ -227,7 +259,7 @@ async function stopPatrol() {
   currentTask.value = null;
   recording.value = false;
   await refreshLocal();
-  renderMap();
+  scheduleRenderMap();
   showSuccessToast("已结束巡护");
 }
 
@@ -294,7 +326,7 @@ async function saveEvent() {
     });
     eventPopupVisible.value = false;
     await refreshLocal();
-    renderMap();
+    scheduleRenderMap();
     showSuccessToast("事件已保存");
   } catch {
     showFailToast("保存事件失败");
@@ -308,16 +340,28 @@ async function removeEvent(row) {
   if (!ok) return;
   await deleteRecord(stores.patrolEvents, row.local_id);
   await refreshLocal();
-  renderMap();
+  scheduleRenderMap();
   showSuccessToast("已删除");
 }
 
-function exportEventsJson() {
-  if (!patrolEvents.value.length) {
+async function exportEventsJson() {
+  const vid = viewingTaskLocalId.value;
+  if (!vid) {
     showFailToast("暂无可导出事件");
     return;
   }
-  const blob = new Blob([JSON.stringify(patrolEvents.value, null, 2)], { type: "application/json;charset=utf-8" });
+  let rows;
+  try {
+    rows = await getPatrolEventsForTaskAll(vid);
+  } catch {
+    showFailToast("读取事件失败");
+    return;
+  }
+  if (!rows.length) {
+    showFailToast("暂无可导出事件");
+    return;
+  }
+  const blob = new Blob([JSON.stringify(rows, null, 2)], { type: "application/json;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -343,12 +387,52 @@ function pointToLngLat(row) {
 
 function locateEventOnMap(row) {
   focusedEventLocalId.value = row.local_id;
-  if (!map || !row) return;
+  if (!row || !map || !mapDisplayReady.value) {
+    if (online.value && row && !mapReady.value) {
+      showFailToast("请等待地图加载完成后再定位");
+    }
+    return;
+  }
   map.setZoomAndCenter(16, pointToLngLat(row));
 }
 
+function destroyMap() {
+  clearMapObjects();
+  if (map) {
+    try {
+      map.destroy();
+    } catch (_) {
+      /* ignore */
+    }
+    map = null;
+  }
+  mapReady.value = false;
+  mapLoading.value = false;
+}
+
+function scheduleRenderMap() {
+  if (!map || !online.value) return;
+  if (renderMapRaf) cancelAnimationFrame(renderMapRaf);
+  renderMapRaf = requestAnimationFrame(() => {
+    renderMapRaf = 0;
+    renderMap();
+  });
+}
+
+function scheduleIdle(fn) {
+  if (typeof requestIdleCallback === "function") {
+    requestIdleCallback(fn, { timeout: 2800 });
+  } else {
+    setTimeout(fn, 500);
+  }
+}
+
 async function ensureMap() {
-  if (!online.value || map || !mapWrapRef.value) return;
+  if (!online.value || map) return;
+  for (let i = 0; i < 12 && online.value && !mapWrapRef.value; i += 1) {
+    await nextTick();
+  }
+  if (!online.value || !mapWrapRef.value) return;
   try {
     mapLoading.value = true;
     mapError.value = "";
@@ -367,6 +451,14 @@ async function ensureMap() {
     mapReady.value = true;
   } catch (error) {
     mapReady.value = false;
+    if (map) {
+      try {
+        map.destroy();
+      } catch (_) {
+        /* ignore */
+      }
+      map = null;
+    }
     mapError.value = error?.message || "地图加载失败";
     showFailToast(mapError.value);
   } finally {
@@ -374,14 +466,22 @@ async function ensureMap() {
   }
 }
 
+async function initMapSilently() {
+  if (!online.value || map) return;
+  await ensureMap();
+  await nextTick();
+  scheduleRenderMap();
+}
+
 async function initMapOnDemand() {
+  mapError.value = "";
   if (!online.value) {
     showFailToast("当前离线，无法加载在线地图");
     return;
   }
   await ensureMap();
   await nextTick();
-  renderMap();
+  scheduleRenderMap();
 }
 
 function clearMapObjects() {
@@ -437,25 +537,52 @@ function renderMap() {
   }
 }
 
+function handleWindowOnline() {
+  networkStore.setNavigatorOnline(true);
+  if (map && mapReady.value) {
+    nextTick(() => scheduleRenderMap());
+  } else if (online.value) {
+    scheduleIdle(() => initMapSilently());
+  }
+}
+
+function handleWindowOffline() {
+  networkStore.setNavigatorOnline(false);
+}
+
 onMounted(async () => {
   await refreshLocal();
   if (recording.value) startTimer();
-  window.addEventListener("online", async () => {
-    networkStore.setNavigatorOnline(true);
-    if (mapReady.value) {
-      await ensureMap();
-      renderMap();
-    }
-  });
-  window.addEventListener("offline", () => {
-    networkStore.setNavigatorOnline(false);
-  });
+  window.addEventListener("online", handleWindowOnline);
+  window.addEventListener("offline", handleWindowOffline);
+  if (online.value) {
+    scheduleIdle(() => initMapSilently());
+  }
+});
+
+onUnmounted(() => {
+  window.removeEventListener("online", handleWindowOnline);
+  window.removeEventListener("offline", handleWindowOffline);
+  stopTimer();
+  destroyMap();
+  if (renderMapRaf) cancelAnimationFrame(renderMapRaf);
+});
+
+watch(online, (isOnline) => {
+  if (!isOnline) {
+    destroyMap();
+    mapError.value = "";
+  } else {
+    scheduleIdle(() => {
+      if (online.value) initMapSilently();
+    });
+  }
 });
 
 watch(
   () => [patrolPoints.value.length, patrolEvents.value.length, mapReady.value, online.value],
   () => {
-    if (hasMap.value) renderMap();
+    if (mapDisplayReady.value) scheduleRenderMap();
   }
 );
 </script>
@@ -481,6 +608,9 @@ watch(
         <span>轨迹点：{{ pointCount }}</span>
         <span>事件数：{{ eventCount }}</span>
       </div>
+      <p v-if="pointCount > uiPointLoaded || eventCount > uiEventLoaded" class="tip">
+        为减轻卡顿，界面仅载入当前任务最近 {{ MAX_PATROL_POINTS_UI }} 个轨迹点与 {{ MAX_PATROL_EVENTS_UI }} 条事件用于展示；统计数字为实际总量。
+      </p>
     </section>
 
     <section class="card event-entry">
@@ -495,27 +625,31 @@ watch(
       <div class="head">
         <h3>地图轨迹可视化</h3>
         <div class="head-actions">
-          <span class="sub">{{ hasMap ? "已加载高德地图" : online ? "未加载（按需）" : "离线模式暂不加载地图" }}</span>
+          <span class="sub">{{
+            !online ? "离线不显示地图" : mapDisplayReady ? "已加载高德地图" : mapLoading ? "地图加载中…" : "联网后将自动加载"
+          }}</span>
           <van-button
-            v-if="online && !hasMap"
+            v-if="online && !mapLoading && !mapDisplayReady"
             size="mini"
             type="primary"
             plain
-            :loading="mapLoading"
             @click="initMapOnDemand"
           >
-            加载地图
+            {{ mapError ? "重试" : "立即加载" }}
           </van-button>
         </div>
       </div>
-      <div v-if="hasMap" ref="mapWrapRef" class="map-wrap" />
-      <p v-else-if="online" class="tip">
-        {{ mapError || "点击“加载地图”后再查看轨迹线与事件点（优化首屏卡顿）" }}
-      </p>
-      <p v-if="hasMap && (hiddenPathPointCount || hiddenEventCount)" class="tip">
+      <div v-if="online" class="map-shell">
+        <div ref="mapWrapRef" class="map-wrap" />
+        <div v-if="mapLoading" class="map-status">地图加载中…</div>
+        <div v-else-if="mapError && !mapReady" class="map-status map-status-err">
+          <p class="map-err-msg">{{ mapError }}</p>
+        </div>
+      </div>
+      <p v-else class="tip">当前离线：不请求在线地图。轨迹与事件仍保存在本机；恢复网络后会自动尝试加载地图与轨迹线。</p>
+      <p v-if="mapDisplayReady && (hiddenPathPointCount || hiddenEventCount)" class="tip">
         轻量模式：地图仅渲染最近 {{ MAX_PATH_POINTS_ON_MAP }} 个轨迹点与 {{ MAX_EVENT_MARKERS_ON_MAP }} 个事件点（已省略轨迹 {{ hiddenPathPointCount }}、事件 {{ hiddenEventCount }}）。
       </p>
-      <p v-if="!online" class="tip">离线下仍持续保存轨迹和事件；联网后自动显示轨迹线与事件点。</p>
     </section>
 
     <section class="card events-panel">
@@ -542,7 +676,7 @@ watch(
       <div v-if="!sortedEvents.length" class="empty">暂无事件记录</div>
       <div v-else class="event-list">
         <article
-          v-for="ev in sortedEvents"
+          v-for="ev in displayedEvents"
           :key="ev.local_id"
           class="event-item"
           :class="{ focused: focusedEventLocalId === ev.local_id }"
@@ -559,6 +693,9 @@ watch(
             <van-button size="mini" type="danger" plain @click.stop="removeEvent(ev)">删除</van-button>
           </div>
         </article>
+        <p v-if="hiddenEventListCount > 0" class="tip">
+          事件列表仅显示最近 {{ MAX_EVENTS_IN_LIST }} 条，已省略 {{ hiddenEventListCount }} 条以提升流畅度。
+        </p>
       </div>
     </section>
 
@@ -650,11 +787,40 @@ watch(
   align-items: center;
   gap: 8px;
 }
-.map-wrap {
+.map-shell {
+  position: relative;
   margin-top: 8px;
+  min-height: 260px;
+}
+.map-wrap {
   height: 260px;
   border-radius: 10px;
   overflow: hidden;
+}
+.map-status {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(246, 247, 251, 0.92);
+  color: #646566;
+  font-size: 13px;
+  border-radius: 10px;
+  pointer-events: none;
+}
+.map-status-err {
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: auto;
+  padding: 12px;
+  text-align: center;
+}
+.map-err-msg {
+  margin: 0;
+  font-size: 12px;
+  color: #ee0a24;
+  line-height: 1.5;
 }
 .filters {
   margin: 8px 0;

@@ -3,8 +3,9 @@ import { createRouter, createWebHistory } from "vue-router";
 import HomeView from "../views/HomeView.vue";
 import IdentifyView from "../views/IdentifyView.vue";
 import LoginView from "../views/LoginView.vue";
-import PatrolView from "../views/PatrolView.vue";
 import QaView from "../views/QaView.vue";
+
+const PatrolView = () => import("../views/PatrolView.vue");
 import { useAuthStore } from "../stores/auth";
 
 const routes = [
