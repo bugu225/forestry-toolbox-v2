@@ -4,8 +4,9 @@ import { useAuthStore } from "../stores/auth";
 function resolveBaseURL() {
   const fromEnv = import.meta.env.VITE_API_BASE;
   if (fromEnv) return fromEnv;
-  // 生产构建未配 env 时仍指向默认后端；开发默认 /api 走 Vite 代理
-  return import.meta.env.DEV ? "/api" : "http://localhost:5000/api";
+  // 开发与生产均默认同源 /api：dev 由 Vite 代理到 Flask；生产由 Nginx 等反代到后端。
+  // 若需直连某台机器上的后端（无反代），构建前设置 VITE_API_BASE，例如 http://127.0.0.1:5000/api
+  return "/api";
 }
 
 /** 普通接口；联网问答含 LLM，单独用更长超时（见 QA_ASK_TIMEOUT_MS） */

@@ -15,13 +15,16 @@ const form = reactive({
 });
 
 function resolveLoginError(error) {
+  if (error?.response?.status === 401) {
+    return "用户名或密码错误";
+  }
   const serverMsg = error?.response?.data?.error?.message;
   if (serverMsg) return serverMsg;
   if (error?.code === "ECONNABORTED" || /timeout/i.test(error?.message || "")) {
     return "请求超时，请检查网络或稍后重试";
   }
-  if (!error?.response) {
-    return "无法连接后端：请先在 backend 目录启动服务（如 python run.py），并确认本页使用 npm run dev 且已配置 Vite 代理 /api";
+  if (error?.request && !error?.response) {
+    return "网络异常：请检查服务器与 Nginx 是否可访问";
   }
   return "请求失败，请稍后重试";
 }
