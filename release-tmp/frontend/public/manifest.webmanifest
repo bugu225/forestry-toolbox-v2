@@ -1,0 +1,18 @@
+{
+  "name": "林业百宝箱",
+  "short_name": "林业百宝箱",
+  "description": "离线优先的林业识图、问答与巡护工具",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f7f8fa",
+  "theme_color": "#07c160",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
