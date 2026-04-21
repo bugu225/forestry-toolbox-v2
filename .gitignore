@@ -8,6 +8,8 @@ __pycache__/
 *.db
 .env.local
 .env.*
+# 允许提交生产前端构建用变量（无密钥），避免服务器 .env.local 误配 localhost 打进 dist
+!.env.production
 .DS_Store
 
 release-tmp/
