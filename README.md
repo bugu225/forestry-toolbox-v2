@@ -34,7 +34,7 @@
 可在项目根目录或各子项目旁使用 `.env.local` / `.env.production` 等，具体键名以 `.env.example` 为准。
 
 - **后端常用**：`PLANT_API_KEY`、`PLANT_API_SECRET`（识图通道）、`LLM_API_KEY`、`CORS_ORIGINS` 等
-- **前端常用**：`VITE_API_BASE`（生产环境必须指向你的后端 `/api` 根，如 `https://域名/api`）；若使用高德相关能力：`VITE_AMAP_JS_KEY`、`VITE_AMAP_SECURITY_JS_CODE`
+- **前端常用**：`VITE_API_BASE`（接口根路径；生产构建默认见根目录 **`.env.production`**，当前为 **`/api`**，与 Nginx 反代同源）。**切勿**在参与 `npm run build` 的 env 里写 `http://localhost:5000/...`，否则会被打进浏览器，公网用户请求会打到自己电脑。若前端与 API 不同源（如静态在 CDN），再改为完整 URL，例如 `https://api.你的域名/api`。高德相关：`VITE_AMAP_JS_KEY`、`VITE_AMAP_SECURITY_JS_CODE`
 
 ## 本地启动（Windows / PowerShell）
 
@@ -116,28 +116,53 @@ npm run dev
 
 ### 4）生产构建（部署前）
 
+在仓库根目录或 `frontend` 下执行（`vite.config.js` 的 `envDir` 为仓库根目录，会读取根目录 `.env.production`）：
+
 ```bash
 cd frontend
 npm ci
 npm run build
 ```
 
-**务必在构建前**设置好生产用 `VITE_API_BASE`，否则打包后的前端可能仍指向错误 API 地址。
+根目录 **`.env.production`** 已提交，默认 **`VITE_API_BASE=/api`**。若需覆盖（例如 API 单独域名），可改该文件或使用 **`.env.production.local`**（勿提交）。**构建完成后不要删除 `dist`**，除非紧接着再执行一次 `npm run build`。
 
 ## 部署提示（服务器）
 
-1. `git pull` 或使用 tag（如 `release-2026-04-19`）检出对应版本。  
-2. 后端：虚拟环境内 `pip install -r requirements.txt`，配置环境变量后重启进程。  
-3. 前端：`npm ci && npm run build`，用 Nginx 等托管 `frontend/dist`。  
-4. 旧版本若曾带巡护/同步审计等表，升级后 SQLite 中可能残留**未再使用的表**，一般不影响运行；若需「干净库」请在**备份后**自行处理数据文件。  
-5. **识图与 Nginx 请求体上限**：`POST /api/identify/sync` 携带 **Base64 图片**，请求体常 **大于 1MB**。Nginx 默认 **`client_max_body_size 1m`** 会返回 **413**，手机端往往只显示「识图请求失败」。请在 **`server { ... }` 内**增加一行 **`client_max_body_size 20m;`**（或更大），并对 **`location /api/`** 适当增加 **`proxy_read_timeout 120s;`** 等，然后执行 **`sudo nginx -t && sudo systemctl reload nginx`**。同时确认后端 **`PLANT_API_KEY` / `PLANT_API_SECRET`** 已配置并重启 **`forestry-backend`**。
+**Git 与 GitHub**：服务器上的代码来自 **`git pull`**；若本机改了代码但 **未 `git push` 到 GitHub**，服务器会一直 `Already up to date`，页面不会变。用 **Cursor**：源代码管理里 **提交** 后还要 **推送**；大包推送易超时，可用 **SSH 远程**（`git@github.com:...`）并适当加大 `http.postBuffer`（见上文 HTTPS 说明）。
+
+**推荐一次完整更新（路径按你机器调整）**：
+
+```bash
+cd /opt/forestry-toolbox-v2
+git fetch origin && git pull origin main
+cd backend && source .venv/bin/activate && pip install -r requirements.txt
+cd ../frontend && rm -rf dist && npm ci && npm run build
+sudo systemctl restart forestry-backend
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+在仓库根目录核对源码是否已更新（勿在 `frontend` 子目录里多写一层 `frontend/`）：
+
+```bash
+cd /opt/forestry-toolbox-v2
+grep -E 'v1版本|开发测试版' frontend/src/views/LoginView.vue
+curl -s http://127.0.0.1/login | grep -oE '开发测试版|v1版本' | head -1
+```
+
+**发布后自检**：浏览器 F12 → Network，登录请求应为 **`/api/auth/login`** 或 **`http(s)://你的站点/api/auth/login`**；若出现 **`http://localhost:5000/...`**，说明线上 `dist` 仍是旧构建或构建时注入了错误的 `VITE_API_BASE`。另：无痕窗口或强刷避免缓存旧 `index-*.js`。
+
+**其他注意**：
+
+- 也可用 tag 检出固定版本（如 `release-2026-04-19`）再按上文命令构建。  
+- 旧版本若曾带巡护/同步审计等表，升级后 SQLite 中可能残留**未再使用的表**，一般不影响运行；若需「干净库」请在**备份后**自行处理数据文件。  
+- **识图与 Nginx 请求体上限**：`POST /api/identify/sync` 携带 **Base64 图片**，请求体常 **大于 1MB**。Nginx 默认 **`client_max_body_size 1m`** 会返回 **413**，手机端往往只显示「识图请求失败」。请在 **`server { ... }` 内**增加 **`client_max_body_size 20m;`**（或更大），并对 **`location /api/`** 适当增加 **`proxy_read_timeout 120s;`** 等，然后 **`sudo nginx -t && sudo systemctl reload nginx`**。同时确认后端 **`PLANT_API_KEY` / `PLANT_API_SECRET`** 已配置。
 
 ### 腾讯云轻量应用服务器：长期对外访问（推荐，不等同于「再穿透一层」）
 
 轻量云一般已有 **公网 IP**，网站长期上线不必再套家用意义上的内网穿透；标准做法是 **域名 + Nginx + HTTPS**：
 
 1. **域名**：在域名注册商处把 **A 记录** 指到轻量实例的公网 IP（若用腾讯云 DNSPod，在控制台添加解析即可）。若域名需 **ICP 备案**，请按腾讯云备案流程完成后再开 80/443。  
-2. **服务器**：`/opt/forestry-toolbox-v2`（或你的目录）拉代码、配 `backend/.env.local` 或 systemd 的 `EnvironmentFile`，其中生产前端构建使用 **`VITE_API_BASE=https://你的域名/api`**（与 Nginx 反代路径一致）。  
+2. **服务器**：`/opt/forestry-toolbox-v2`（或你的目录）拉代码、配 `backend/.env.local` 或 systemd 的 `EnvironmentFile`。前端与站点**同源**时，构建使用仓库内 **`.env.production`** 的 **`/api`** 即可；若使用**独立 API 域名**，再在构建前将 `VITE_API_BASE` 设为 **`https://你的域名/api`**（与 Nginx 反代路径一致）。  
 3. **Nginx**：`root` 指向 `frontend/dist`，`location /api/` `proxy_pass` 到本机后端（如 `127.0.0.1:5000`）；参考仓库 `docs/nginx-forestry-example.conf`。  
 4. **HTTPS**：使用 **Let’s Encrypt**（`certbot --nginx -d 你的域名`）或腾讯云 SSL 证书托管，保证全站 HTTPS，便于定位与高德等能力。  
 5. **防火墙**：轻量控制台「防火墙」放行 **80、443**；仅 SSH 时放行 22。
