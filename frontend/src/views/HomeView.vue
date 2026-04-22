@@ -87,7 +87,7 @@ function requestLocationPermission() {
 
 <template>
   <div class="page">
-    <van-nav-bar title="功能首页" />
+    <van-nav-bar title="功能首页（v1）" />
 
     <div class="home-main">
       <p class="welcome">你好，{{ username }}</p>
