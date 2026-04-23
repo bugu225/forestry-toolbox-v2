@@ -11,8 +11,8 @@ const authStore = useAuthStore();
 const networkStore = useNetworkStore();
 const { effectiveOnline: online } = storeToRefs(networkStore);
 
-/** 识图走同步接口，百度双通道可能较慢 */
-const IDENTIFY_SYNC_TIMEOUT_MS = 60000;
+/** 识图走同步接口：百度 + 可选简介，与 Nginx `proxy_read_timeout`（建议 ≥120s）对齐 */
+const IDENTIFY_SYNC_TIMEOUT_MS = 120000;
 /** 中部对话：user 含 image；assistant 含 text / pending */
 const chatMessages = ref([]);
 const chatScrollRef = ref(null);

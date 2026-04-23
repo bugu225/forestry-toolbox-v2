@@ -130,4 +130,7 @@ export const stores = {
   qaPendingQuestions: STORE_QA_PENDING_QUESTIONS,
   userKnowledgeEntries: STORE_USER_KNOWLEDGE_ENTRIES,
   identifyGallery: STORE_IDENTIFY_GALLERY,
+  patrolTasks: STORE_PATROL_TASKS,
+  patrolPoints: STORE_PATROL_POINTS,
+  patrolEvents: STORE_PATROL_EVENTS,
 };
