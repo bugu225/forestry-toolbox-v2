@@ -241,7 +241,10 @@ async function initAmapIfNeeded() {
     AMapCtor = await loadAmap();
   } catch (e) {
     const code = e?.message || "";
-    if (code === "no_amap_key") mapError.value = "未配置 VITE_AMAP_JS_KEY";
+    if (code === "no_amap_key") {
+      mapError.value =
+        "未配置高德 Key：请在构建环境变量 VITE_AMAP_JS_KEY 中配置，或在 index.html 的 <head> 内增加 meta forestry-amap-key / forestry-amap-security 后刷新页面。";
+    }
     else if (code === "amap_load_timeout") mapError.value = "高德脚本加载超时，请检查网络或安全域名配置";
     else if (code === "amap_script_error") mapError.value = "高德脚本加载失败（网络或被拦截）";
     else if (code === "amap_load_failed") mapError.value = "高德脚本已返回但未暴露 AMap，请核对 Key 与版本";
@@ -403,9 +406,17 @@ async function startPatrol() {
   gpsBusy.value = true;
   try {
     await getPositionOnce();
-  } catch {
-    showFailToast("请先允许定位后再开始巡护");
-    gpsBusy.value = false;
+  } catch (e) {
+    const code = Number(e?.code ?? 0);
+    if (code === 1) {
+      showFailToast(
+        "定位权限未生效：请在浏览器「站点设置」中允许定位；若已允许，请完全关闭浏览器再打开，或清除本站数据后重新授权。"
+      );
+    } else if (code === 2 || code === 3) {
+      showFailToast("暂时无法获取坐标：请到室外或窗边重试，并确认系统定位/GPS 已开启。");
+    } else {
+      showFailToast("无法开始巡护：请确认浏览器支持定位且使用 HTTPS 打开本站。");
+    }
     return;
   } finally {
     gpsBusy.value = false;
@@ -808,8 +819,8 @@ onUnmounted(() => {
       <van-tab title="巡护">
         <div class="panel">
           <p class="hint">
-            轨迹与事件保存在本机 IndexedDB；联网且已登录时可同步到服务端。地图页使用高德 JS（需配置
-            VITE_AMAP_JS_KEY 与安全码）。
+            轨迹与事件保存在本机 IndexedDB；联网且已登录时可同步到服务端。地图页使用高德 JS（需构建变量
+            VITE_AMAP_JS_KEY 与安全码，或为已部署的 index.html 注入 meta forestry-amap-key）。
           </p>
 
           <div v-if="activeTask" class="status-chip">
@@ -898,7 +909,10 @@ onUnmounted(() => {
             <p v-if="mapError.includes('超时') || mapError.includes('脚本')" class="sub">
               请检查网络、高德控制台域名白名单及安全码配置。
             </p>
-            <p v-else class="sub">可检查 .env 中 VITE_AMAP_JS_KEY、VITE_AMAP_SECURITY_JS_CODE 后重新构建。</p>
+            <p v-else class="sub">
+              可在构建用 .env 中配置 VITE_AMAP_JS_KEY、VITE_AMAP_SECURITY_JS_CODE；或在当前页的 index.html 增加 meta
+              forestry-amap-key / forestry-amap-security 后强刷，无需重新 npm build。
+            </p>
           </div>
           <div ref="amapDivRef" class="amap-box" />
           <div class="playback-bar">

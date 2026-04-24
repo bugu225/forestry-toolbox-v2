@@ -34,7 +34,7 @@
 可在项目根目录或各子项目旁使用 `.env.local` / `.env.production` 等，具体键名以 `.env.example` 为准。
 
 - **后端常用**：`PLANT_API_KEY`、`PLANT_API_SECRET`（识图通道）、`LLM_API_KEY`、`CORS_ORIGINS` 等
-- **前端常用**：`VITE_API_BASE`（接口根路径；生产构建默认见根目录 **`.env.production`**，当前为 **`/api`**，与 Nginx 反代同源）。**切勿**在参与 `npm run build` 的 env 里写 `http://localhost:5000/...`，否则会被打进浏览器，公网用户请求会打到自己电脑。若前端与 API 不同源（如静态在 CDN），再改为完整 URL，例如 `https://api.你的域名/api`。高德相关：`VITE_AMAP_JS_KEY`、`VITE_AMAP_SECURITY_JS_CODE`
+- **前端常用**：`VITE_API_BASE`（接口根路径；生产构建默认见根目录 **`.env.production`**，当前为 **`/api`**，与 Nginx 反代同源）。**切勿**在参与 `npm run build` 的 env 里写 `http://localhost:5000/...`，否则会被打进浏览器，公网用户请求会打到自己电脑。若前端与 API 不同源（如静态在 CDN），再改为完整 URL，例如 `https://api.你的域名/api`。高德相关：`VITE_AMAP_JS_KEY`、`VITE_AMAP_SECURITY_JS_CODE`（构建时写入）；也可在已部署的 **`dist/index.html`** 的 `<head>` 内增加 `<meta name="forestry-amap-key" content="...">` 与 `<meta name="forestry-amap-security" content="...">` 后强刷页面，免重新 `npm run build`。
 
 ## 本地启动（Windows / PowerShell）
 

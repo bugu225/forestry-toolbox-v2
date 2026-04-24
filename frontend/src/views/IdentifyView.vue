@@ -30,6 +30,8 @@ const cameraBusy = ref(false);
 
 /** 拍摄前元数据弹窗（不依赖网络）；确定后才进入识图流程 */
 const showShotMetaPopup = ref(false);
+/** 拍摄信息弹窗顶部预览（先拍照/选图后再填信息） */
+const shotMetaPreviewUrl = ref("");
 const metaLocationLoading = ref(false);
 const metaForm = reactive({
   datetimeLocal: "",
@@ -293,9 +295,11 @@ function resetMetaForm() {
   metaForm.category = "plant";
 }
 
-/** @returns {Promise<object|null>} meta 或取消时为 null */
-function openShotMetaDialog() {
+/** @returns {Promise<object|null>} meta 或取消时为 null @param previewDataUrl 已拍/已选图片的 data URL，用于弹窗顶部预览 */
+function openShotMetaDialog(previewDataUrl = "") {
   resetMetaForm();
+  shotMetaPreviewUrl.value =
+    typeof previewDataUrl === "string" && previewDataUrl.startsWith("data:image") ? previewDataUrl : "";
   return new Promise((resolve) => {
     if (metaDialogResolve) {
       metaDialogResolve(null);
@@ -334,6 +338,7 @@ function confirmShotMeta() {
   const meta = buildShotMetaFromForm();
   const r = metaDialogResolve;
   metaDialogResolve = null;
+  shotMetaPreviewUrl.value = "";
   showShotMetaPopup.value = false;
   r?.(meta);
 }
@@ -341,11 +346,13 @@ function confirmShotMeta() {
 function cancelShotMeta() {
   const r = metaDialogResolve;
   metaDialogResolve = null;
+  shotMetaPreviewUrl.value = "";
   showShotMetaPopup.value = false;
   r?.(null);
 }
 
 function onShotMetaPopupClosed() {
+  shotMetaPreviewUrl.value = "";
   if (metaDialogResolve) {
     const r = metaDialogResolve;
     metaDialogResolve = null;
@@ -360,7 +367,7 @@ function applyCurrentTimeToMeta() {
 function formatGeoError(error, fallback = "获取位置失败，可手动输入经纬度") {
   const code = Number(error?.code || 0);
   if (code === 1) {
-    return "定位权限被拒绝：请在系统设置与本应用中允许定位后重试。";
+    return "定位权限未生效：请在浏览器站点设置中允许定位；若已允许，请完全关闭浏览器再打开，或清除本站数据后重新授权。";
   }
   if (code === 2) {
     return "定位不可用：请确认手机定位服务（GPS）已开启，并在室外或网络较好环境重试。";
@@ -645,11 +652,19 @@ async function captureViaGetUserMedia() {
 
 async function triggerCamera() {
   if (cameraBusy.value) return;
+  const ua = typeof navigator !== "undefined" ? navigator.userAgent || "" : "";
+  /** 手机端优先系统相机（file + capture），先完成拍照再回到页面填写拍摄信息 */
+  const preferNativeCamera = /iPhone|iPad|iPod|Android|HarmonyOS|webOS|BlackBerry|Mobile/i.test(ua);
+  if (preferNativeCamera) {
+    cameraInput.value?.click();
+    return;
+  }
+
   cameraBusy.value = true;
   try {
     const dataUrl = await captureViaGetUserMedia();
     if (dataUrl && dataUrl.startsWith("data:image")) {
-      const meta = await openShotMetaDialog();
+      const meta = await openShotMetaDialog(dataUrl);
       if (!meta) return;
       await addChatAndIdentify(dataUrl, "camera", `拍摄_${Date.now()}.jpg`, meta);
       return;
@@ -671,7 +686,7 @@ async function processAlbumFileList(files) {
     eligible += 1;
     try {
       const dataUrl = await readAsDataURL(file);
-      const meta = await openShotMetaDialog();
+      const meta = await openShotMetaDialog(dataUrl);
       if (!meta) continue;
       const done = await addChatAndIdentify(dataUrl, "album", file.name || "相册.jpg", meta);
       if (done) ok += 1;
@@ -780,7 +795,7 @@ async function onCameraFile(ev) {
   }
   try {
     const dataUrl = await readAsDataURL(file);
-    const meta = await openShotMetaDialog();
+    const meta = await openShotMetaDialog(dataUrl);
     if (!meta) return;
     await addChatAndIdentify(dataUrl, "camera", file.name || "拍摄.jpg", meta);
   } catch {
@@ -938,7 +953,17 @@ onMounted(async () => {
     >
       <div class="shot-meta-sheet">
         <p class="shot-meta-title">拍摄信息</p>
-        <p class="shot-meta-hint">以下为本地填写，不消耗网络；点「确定」后才会保存图片并尝试云端识图。</p>
+        <p class="shot-meta-hint">
+          {{
+            shotMetaPreviewUrl
+              ? "已拍摄/已选择照片如下。请补充时间与位置等信息；点「确定」后才会保存并调用云端识图。"
+              : "以下为本地填写，不消耗网络；点「确定」后才会保存图片并尝试云端识图。"
+          }}
+        </p>
+
+        <div v-if="shotMetaPreviewUrl" class="shot-meta-preview-wrap">
+          <img class="shot-meta-preview-img" :src="shotMetaPreviewUrl" alt="待确认的照片预览" />
+        </div>
 
         <div class="shot-meta-block">
           <span class="shot-meta-label">拍摄时间</span>
@@ -1382,6 +1407,26 @@ onMounted(async () => {
   color: #969799;
   line-height: 1.5;
   text-align: center;
+}
+
+.shot-meta-preview-wrap {
+  margin: 0 0 14px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #1a1a1a;
+  max-height: min(42vh, 320px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.shot-meta-preview-img {
+  display: block;
+  max-width: 100%;
+  max-height: min(42vh, 320px);
+  width: auto;
+  height: auto;
+  object-fit: contain;
 }
 
 .shot-meta-block {

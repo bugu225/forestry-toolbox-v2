@@ -200,7 +200,11 @@ function requestLocationPermission() {
     .catch((error) => {
       const code = Number(error?.code || 0);
       if (code === 1) {
-        showToast({ message: "您已拒绝定位，请到系统设置或本应用权限里开启定位。", position: "middle" });
+        showToast({
+          message:
+            "定位仍被拒或未生效：请在浏览器「站点信息」里允许定位；若已允许，请完全关闭浏览器再打开，或清除本站数据后重新授权。",
+          position: "middle",
+        });
         return;
       }
       if (code === 2) {
