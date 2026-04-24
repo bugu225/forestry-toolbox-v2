@@ -7,6 +7,7 @@ import { useAuthStore } from "../stores/auth";
 import apiClient, { API_READ_TIMEOUT_MS } from "../api/client";
 import { loadAmap } from "../services/amapLoader";
 import { deleteRecord, getAllRecords, putRecord, stores } from "../services/offlineDb";
+import { getCurrentPositionCompat } from "../utils/geolocation";
 
 const networkStore = useNetworkStore();
 const { effectiveOnline } = storeToRefs(networkStore);
@@ -342,17 +343,7 @@ function clearSamplingTimer() {
 }
 
 function getPositionOnce() {
-  return new Promise((resolve, reject) => {
-    if (!navigator.geolocation) {
-      reject(new Error("no_geolocation"));
-      return;
-    }
-    navigator.geolocation.getCurrentPosition(resolve, reject, {
-      enableHighAccuracy: true,
-      timeout: 20000,
-      maximumAge: 0,
-    });
-  });
+  return getCurrentPositionCompat();
 }
 
 async function recordSamplePoint() {
@@ -977,7 +968,9 @@ onUnmounted(() => {
 <style scoped>
 .page {
   min-height: 100dvh;
-  padding-bottom: env(safe-area-inset-bottom, 0);
+  min-height: -webkit-fill-available;
+  box-sizing: border-box;
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 52px);
   background: #f6f7fb;
 }
 

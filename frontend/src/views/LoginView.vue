@@ -46,7 +46,7 @@ async function submit() {
 
 <template>
   <div class="page">
-    <h1 class="title">林业百宝箱</h1>
+    <h1 class="title">林业智能巡护助手</h1>
     <van-form @submit="submit">
       <van-cell-group inset>
         <van-field v-model="form.username" name="username" label="用户名" required autocomplete="username" />

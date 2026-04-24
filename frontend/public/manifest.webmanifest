@@ -1,6 +1,6 @@
 {
-  "name": "林业百宝箱",
-  "short_name": "林业百宝箱",
+  "name": "林业智能巡护助手",
+  "short_name": "林业智能巡护",
   "description": "离线优先的林业识图、问答与巡护工具",
   "start_url": "/",
   "scope": "/",

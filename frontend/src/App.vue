@@ -17,6 +17,7 @@ body {
 
 #app {
   min-height: 100dvh;
+  min-height: -webkit-fill-available;
   max-width: 100%;
   box-sizing: border-box;
 }

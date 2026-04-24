@@ -1,4 +1,4 @@
-# 林业百宝箱 v2
+# 林业智能巡护助手 v2
 
 面向中国大学生计算机设计大赛 **Web 应用与开发** 赛道的林业工具站点：在**本机离线能力**（IndexedDB 存问答会话、知识条目、识图图集等）与**联网能力**（鉴权、LLM 问答、云端识图）之间取得平衡。
 
@@ -151,7 +151,7 @@ sudo nginx -t && sudo systemctl reload nginx
 
 ```bash
 cd /opt/forestry-toolbox-v2
-grep -E '林业百宝箱' frontend/src/views/LoginView.vue | head -1
+grep -E '林业智能巡护助手' frontend/src/views/LoginView.vue | head -1
 curl -sS -o /dev/null -w "%{http_code}" https://你的域名/
 ```
 

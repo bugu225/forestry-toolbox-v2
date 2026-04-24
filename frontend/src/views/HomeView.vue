@@ -2,7 +2,8 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { storeToRefs } from "pinia";
 import { useRouter } from "vue-router";
-import { showToast } from "vant";
+import { showDialog, showToast } from "vant";
+import { getCurrentPositionCompat } from "../utils/geolocation";
 import { useAuthStore } from "../stores/auth";
 import { useNetworkStore } from "../stores/network";
 
@@ -53,6 +54,12 @@ const isIOS =
     Number(navigator.maxTouchPoints) > 1);
 const isAndroid = /Android/i.test(ua);
 
+/** 百度系内置浏览器通常不触发 beforeinstallprompt，需走菜单手动添加 */
+const isBaiduBrowser = computed(() => {
+  const u = typeof navigator === "undefined" ? "" : navigator.userAgent || "";
+  return /baidubrowser|baiduboxapp|bdbrowser/i.test(u);
+});
+
 /** 仅在手机端展示「添加到主屏幕」提示 */
 const isPhoneBrowsing = computed(() => {
   if (typeof navigator === "undefined") return false;
@@ -78,6 +85,9 @@ const showPwaTip = computed(() => {
 });
 
 const pwaHintBody = computed(() => {
+  if (isBaiduBrowser.value) {
+    return "百度手机浏览器通常不会出现系统级「安装」弹窗。请点击下方「查看添加桌面步骤」，或打开浏览器菜单查找「添加到桌面」「桌面快捷方式」等选项（不同版本文案略有差异）。";
+  }
   if (isIOS) {
     return "点 Safari 底栏「分享」图标，选择「添加到主屏幕」并确认。从主屏幕图标打开时，离线缓存与全屏体验更好。";
   }
@@ -88,6 +98,35 @@ const pwaHintBody = computed(() => {
   }
   return "点自带浏览器菜单（⋮），选「添加到主屏幕」或「安装应用」，固定到手机桌面，便于离线使用。";
 });
+
+function showAddToHomeInstructions() {
+  let message = "";
+  if (isBaiduBrowser.value) {
+    message = [
+      "1. 点击浏览器底栏「菜单」或「≡」。",
+      "2. 查找「收藏网址」「添加书签到桌面」「桌面快捷方式」「添加卡片」等（不同版本名称不同）。",
+      "3. 若找不到，可尝试菜单里的「工具箱」或「更多工具」中是否有「添加到主屏幕」。",
+      "4. 仍无法添加时，建议用 Chrome、Edge 或系统自带浏览器打开本站后再试。",
+    ].join("\n");
+  } else if (isIOS) {
+    message =
+      "在 Safari 中：点底栏「分享」↑ 按钮 → 下滑找到「添加到主屏幕」→ 编辑名称后点「添加」。从主屏幕图标打开可获得更接近全屏的体验。";
+  } else if (isAndroid) {
+    message = [
+      "1. 点浏览器右上角或底栏「菜单」（⋮）。",
+      "2. 选择「添加到主屏幕」「安装应用」或「添加快捷方式」。",
+      "3. 若无此选项，多为厂商定制浏览器限制，可换 Chrome / 系统浏览器打开本站。",
+    ].join("\n");
+  } else {
+    message = "请使用浏览器菜单中的「添加到主屏幕」或「安装」功能，将本站固定到桌面。";
+  }
+  showDialog({
+    title: "添加到手机桌面",
+    message,
+    confirmButtonText: "知道了",
+    messageAlign: "left",
+  });
+}
 
 function dismissPwaTip() {
   pwaTipDismissed.value = true;
@@ -154,11 +193,11 @@ function requestLocationPermission() {
     });
     return;
   }
-  navigator.geolocation.getCurrentPosition(
-    () => {
-      showToast({ message: "定位权限已可用", position: "middle" });
-    },
-    (error) => {
+  getCurrentPositionCompat()
+    .then(() => {
+      showToast({ message: "已获取到位置（或网络定位），巡护与拍摄信息可自动填经纬度。", position: "middle" });
+    })
+    .catch((error) => {
       const code = Number(error?.code || 0);
       if (code === 1) {
         showToast({ message: "您已拒绝定位，请到系统设置或本应用权限里开启定位。", position: "middle" });
@@ -169,13 +208,11 @@ function requestLocationPermission() {
         return;
       }
       if (code === 3) {
-        showToast({ message: "定位请求超时，请重试。", position: "middle" });
+        showToast({ message: "定位仍超时：请到室外或窗边重试，或在巡护/拍摄信息里手动填写经纬度。", position: "middle" });
         return;
       }
       showToast({ message: "定位权限申请失败，请稍后重试。", position: "middle" });
-    },
-    { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
-  );
+    });
 }
 
 onMounted(() => {
@@ -236,9 +273,10 @@ onUnmounted(() => {
           >
             一键添加到桌面
           </van-button>
-          <van-button v-if="!canNativeInstall" type="default" size="small" round plain @click="dismissPwaTip">
-            我知道了
+          <van-button type="primary" size="small" round plain class="pwa-install-btn" @click="showAddToHomeInstructions">
+            查看添加桌面步骤
           </van-button>
+          <van-button type="default" size="small" round plain @click="dismissPwaTip">我知道了</van-button>
         </div>
       </div>
 

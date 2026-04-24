@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, reactive, ref } from "vue";
 import { storeToRefs } from "pinia";
 import { showFailToast, showSuccessToast } from "vant";
 import apiClient, { IDENTIFY_SYNC_TIMEOUT_MS } from "../api/client";
+import { getCurrentPositionCompat } from "../utils/geolocation";
 import { useAuthStore } from "../stores/auth";
 import { useNetworkStore } from "../stores/network";
 import { deleteRecord, getAllRecords, getRecord, putRecord, stores } from "../services/offlineDb";
@@ -379,8 +380,8 @@ function fillCurrentLocation() {
     return;
   }
   metaLocationLoading.value = true;
-  navigator.geolocation.getCurrentPosition(
-    (pos) => {
+  getCurrentPositionCompat()
+    .then((pos) => {
       metaLocationLoading.value = false;
       const la = pos.coords?.latitude;
       const lo = pos.coords?.longitude;
@@ -390,13 +391,11 @@ function fillCurrentLocation() {
       }
       metaForm.lat = la.toFixed(1);
       metaForm.lng = lo.toFixed(1);
-    },
-    (error) => {
+    })
+    .catch((error) => {
       metaLocationLoading.value = false;
       showFailToast(formatGeoError(error));
-    },
-    { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 }
-  );
+    });
 }
 
 /** 不把 axios 英文原句直接给用户看 */
@@ -431,7 +430,7 @@ function formatIdentifyApiError(err) {
     return "登录已失效或未携带有效令牌，请退出本页后重新登录，再使用云端识图。";
   }
   if (!err?.response) {
-    return "无法连接识图服务。请检查手机网络与登录状态，确认使用 https 且与登录时同一站点地址。";
+    return "无法连接识图服务。请检查网络、登录状态与 https 地址；若使用百度等第三方浏览器，可换 Chrome / 系统自带浏览器后再试。";
   }
   return "识别失败，请检查网络与登录状态后重试。";
 }
@@ -1067,6 +1066,8 @@ onMounted(async () => {
 .identify-page {
   display: flex;
   flex-direction: column;
+  min-height: 100dvh;
+  min-height: -webkit-fill-available;
   height: 100dvh;
   max-height: 100dvh;
   padding-bottom: env(safe-area-inset-bottom, 0);
@@ -1304,7 +1305,8 @@ onMounted(async () => {
   justify-content: space-between;
   gap: 12px;
   padding: 12px 16px;
-  padding-bottom: max(12px, env(safe-area-inset-bottom));
+  /* 第三方浏览器底栏会盖住最后一行，额外垫高避免按钮贴底或被挡 */
+  padding-bottom: calc(max(12px, env(safe-area-inset-bottom, 0px)) + 52px);
   background: #fff;
   border-top: 1px solid #ebedf0;
 }

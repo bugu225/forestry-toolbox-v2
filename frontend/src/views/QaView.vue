@@ -201,7 +201,7 @@ function formatQaAskFailure(error) {
     return "服务端暂时不可用，请稍后再试。";
   }
   if (!error?.response) {
-    return "无法连接服务器。请确认本机网络与站点地址（含 HTTPS）后重试。";
+    return "无法连接服务器。请确认本机网络与站点地址（含 HTTPS）与登录状态；若使用百度等第三方浏览器，可尝试换 Chrome、Safari 或系统自带浏览器（部分浏览器会拦截同源 /api 请求）。";
   }
   return withAskFailureHint("发送失败");
 }
@@ -1009,6 +1009,10 @@ onMounted(async () => {
 <style scoped>
 .page {
   min-height: 100dvh;
+  min-height: -webkit-fill-available;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
   background: #f7f8fa;
   padding: 16px;
   padding-bottom: calc(28px + env(safe-area-inset-bottom, 0));
@@ -1024,6 +1028,14 @@ onMounted(async () => {
 
 .page--qa-module .module-switcher {
   flex-shrink: 0;
+}
+
+/* 知识库模式：中间区域占满剩余高度，避免底部大块留白 */
+.page > .knowledge-panel {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin-bottom: 0;
 }
 
 .page--qa-module .qa-chat-wrap {
@@ -1250,7 +1262,7 @@ onMounted(async () => {
   align-items: flex-end;
   gap: 8px;
   padding: 10px 12px;
-  padding-bottom: max(12px, env(safe-area-inset-bottom));
+  padding-bottom: calc(max(12px, env(safe-area-inset-bottom, 0px)) + 52px);
   background: #fff;
   border-top: 1px solid #ebedf0;
 }
