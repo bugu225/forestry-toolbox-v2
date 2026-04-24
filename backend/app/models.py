@@ -63,3 +63,16 @@ class KnowledgeDoc(db.Model):
     keywords = db.Column(db.JSON, nullable=False, default=list)
     content = db.Column(db.Text, nullable=False)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+
+
+class PatrolSyncRecord(db.Model):
+    """巡护数据云端快照：按用户 + 客户端任务 local_id 幂等覆盖。"""
+
+    __tablename__ = "patrol_sync_records"
+    __table_args__ = (db.UniqueConstraint("user_id", "client_task_local_id", name="uq_patrol_user_client_task"),)
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    client_task_local_id = db.Column(db.String(128), nullable=False)
+    payload_json = db.Column(db.JSON, nullable=False)
+    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)

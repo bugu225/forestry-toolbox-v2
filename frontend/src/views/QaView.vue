@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 import { useRoute, useRouter } from "vue-router";
 import { showFailToast, showSuccessToast } from "vant";
-import apiClient, { QA_ASK_TIMEOUT_MS } from "../api/client";
+import apiClient, { API_READ_TIMEOUT_MS, QA_ASK_TIMEOUT_MS } from "../api/client";
 import { deleteRecord, getAllRecords, putRecord, stores } from "../services/offlineDb";
 import { useNetworkStore } from "../stores/network";
 
@@ -58,7 +58,7 @@ const knowledgeImportExpanded = ref(false);
 const activeChatSessionLocalId = ref(null);
 const chatScrollRef = ref(null);
 
-/** knowledge=知识库速查；qa=AI 问答；离线时固定为知识库 */
+/** knowledge=本地知识库；qa=联网问答；离线时固定为知识库 */
 const activeModule = ref("knowledge");
 
 watch(online, (isOnline) => {
@@ -190,8 +190,18 @@ function formatQaAskFailure(error) {
   if (code === "ECONNABORTED" || /timeout/i.test(msg)) {
     return "请求超时：问答耗时较长，请稍候再试。若多次失败请检查网络或后端是否正常运行。";
   }
-  if (error?.response?.status === 401) {
+  const status = error?.response?.status;
+  if (status === 401) {
     return "登录已过期，请重新登录后再试。";
+  }
+  if (status === 403) {
+    return "没有权限执行该操作，请确认账号状态。";
+  }
+  if (status && status >= 500) {
+    return "服务端暂时不可用，请稍后再试。";
+  }
+  if (!error?.response) {
+    return "无法连接服务器。请确认本机网络与站点地址（含 HTTPS）后重试。";
   }
   return withAskFailureHint("发送失败");
 }
@@ -471,7 +481,7 @@ function stopVoiceInput() {
 
 function startVoiceInput() {
   if (!speechSupported.value) {
-    showFailToast("当前浏览器不支持语音输入");
+    showFailToast("当前手机不支持语音输入");
     return;
   }
   if (listening.value) {
@@ -480,7 +490,7 @@ function startVoiceInput() {
   }
   const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!Recognition) {
-    showFailToast("当前浏览器不支持语音输入");
+    showFailToast("当前手机不支持语音输入");
     return;
   }
   speechRecognizer = new Recognition();
@@ -512,7 +522,7 @@ function speakPreviewAnswer() {
     return;
   }
   if (!("speechSynthesis" in window)) {
-    showFailToast("当前浏览器不支持语音朗读");
+    showFailToast("当前手机不支持语音朗读");
     return;
   }
   window.speechSynthesis.cancel();
@@ -609,7 +619,7 @@ async function sendChatMessage() {
 async function loadCloudSessions() {
   if (!online.value) return;
   try {
-    const { data } = await apiClient.get("/qa/sessions");
+    const { data } = await apiClient.get("/qa/sessions", { timeout: API_READ_TIMEOUT_MS });
     cloudSessions.value = data.items || [];
   } catch (_) {
     // Keep quiet on cloud list loading.
@@ -619,7 +629,7 @@ async function loadCloudSessions() {
 async function loadCloudMessages(sessionId) {
   if (!online.value || !sessionId) return;
   try {
-    const { data } = await apiClient.get(`/qa/sessions/${sessionId}/messages`);
+    const { data } = await apiClient.get(`/qa/sessions/${sessionId}/messages`, { timeout: API_READ_TIMEOUT_MS });
     cloudMessages.value = data.items || [];
   } catch (_) {
     cloudMessages.value = [];
@@ -712,8 +722,6 @@ async function removePendingQuestion(localId) {
 
 onMounted(async () => {
   speechSupported.value = Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
-  window.addEventListener("online", () => networkStore.setNavigatorOnline(true));
-  window.addEventListener("offline", () => networkStore.setNavigatorOnline(false));
   await refreshLocal();
   await loadCloudSessions();
   const guidedQuestion = (route.query.q || "").toString().trim();
@@ -732,14 +740,14 @@ onMounted(async () => {
 
 <template>
   <div class="page" :class="{ 'page--qa-module': online && activeModule === 'qa' }">
-    <van-nav-bar title="AI 问答页" left-arrow @click-left="$router.back()">
+    <van-nav-bar title="知识问答" left-arrow @click-left="$router.back()">
       <template #right>
         <span class="nav-network-one" aria-live="polite">网络：{{ online ? "在线" : "离线" }}</span>
       </template>
     </van-nav-bar>
 
     <div class="module-switcher">
-      <div class="tab-switcher" role="tablist" aria-label="模块切换">
+      <div class="tab-switcher" role="tablist" aria-label="功能切换">
         <button
           type="button"
           role="tab"
@@ -748,7 +756,7 @@ onMounted(async () => {
           :aria-selected="activeModule === 'knowledge'"
           @click="setActiveModule('knowledge')"
         >
-          知识库速查模块
+          知识库
         </button>
         <button
           type="button"
@@ -759,7 +767,7 @@ onMounted(async () => {
           :disabled="!online"
           @click="setActiveModule('qa')"
         >
-          AI 问答模块{{ online ? "" : "（需联网）" }}
+          联网问答{{ online ? "" : "（需联网）" }}
         </button>
       </div>
     </div>
@@ -1000,16 +1008,15 @@ onMounted(async () => {
 
 <style scoped>
 .page {
-  min-height: 100vh;
+  min-height: 100dvh;
   background: #f7f8fa;
   padding: 16px;
-  padding-bottom: 28px;
+  padding-bottom: calc(28px + env(safe-area-inset-bottom, 0));
 }
 
 .page--qa-module {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
   min-height: 100dvh;
   padding-bottom: 0;
   box-sizing: border-box;

@@ -2,7 +2,7 @@ import { computed, ref } from "vue";
 import { defineStore } from "pinia";
 
 /**
- * 浏览器真实在线状态 + 可选的「模拟断网」（用于测试离线逻辑，不改变系统网络）。
+ * 手机网络在线状态 + 可选「模拟断网」（仅本应用内测试离线，不改系统网络）。
  */
 export const useNetworkStore = defineStore("network", () => {
   const navigatorOnline = ref(typeof navigator !== "undefined" ? navigator.onLine : true);

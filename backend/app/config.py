@@ -29,6 +29,8 @@ class Config:
         for origin in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")
         if origin.strip()
     ]
+    # 置于 Nginx/Caddy 等 HTTPS 反代之后时设为 1，以便识别 X-Forwarded-Proto / Host（香港或其它地区生产环境推荐）
+    FLASK_BEHIND_PROXY = os.getenv("FLASK_BEHIND_PROXY", "0").lower() in ("1", "true", "yes")
     PLANT_API_BASE_URL = os.getenv("PLANT_API_BASE_URL", "https://aip.baidubce.com")
     PLANT_API_KEY = os.getenv("PLANT_API_KEY", "")
     PLANT_API_SECRET = os.getenv("PLANT_API_SECRET", "")

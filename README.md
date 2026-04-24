@@ -128,6 +128,12 @@ npm run build
 
 ## 部署提示（服务器）
 
+### 香港或其它地区 HTTPS 生产环境（摘要）
+
+- **同源部署**：前端 `npm run build` 后由 Nginx `root` 指向 `frontend/dist`，`/api/` 反代到本机 Flask；环境变量 **`CORS_ORIGINS`** 必须与用户实际打开的 **`https://域名`** 一致（见根目录 `.env.example`）。
+- **反代后识别 HTTPS**：后端设置 **`FLASK_BEHIND_PROXY=1`**，以便正确处理 `X-Forwarded-Proto`（见 `backend/app/config.py`）。
+- **Nginx 示例**：`docs/nginx-https-production.example.conf`；详细清单见 **`docs/deploy-https-hongkong.md`**。
+
 **Git 与 GitHub**：服务器上的代码来自 **`git pull`**；若本机改了代码但 **未 `git push` 到 GitHub**，服务器会一直 `Already up to date`，页面不会变。用 **Cursor**：源代码管理里 **提交** 后还要 **推送**；大包推送易超时，可用 **SSH 远程**（`git@github.com:...`）并适当加大 `http.postBuffer`（见上文 HTTPS 说明）。
 
 **推荐一次完整更新（路径按你机器调整）**：
@@ -145,8 +151,8 @@ sudo nginx -t && sudo systemctl reload nginx
 
 ```bash
 cd /opt/forestry-toolbox-v2
-grep -E 'v1版本|开发测试版' frontend/src/views/LoginView.vue
-curl -s http://127.0.0.1/login | grep -oE '开发测试版|v1版本' | head -1
+grep -E '林业百宝箱' frontend/src/views/LoginView.vue | head -1
+curl -sS -o /dev/null -w "%{http_code}" https://你的域名/
 ```
 
 **发布后自检**：浏览器 F12 → Network，登录请求应为 **`/api/auth/login`** 或 **`http(s)://你的站点/api/auth/login`**；若出现 **`http://localhost:5000/...`**，说明线上 `dist` 仍是旧构建或构建时注入了错误的 `VITE_API_BASE`。另：无痕窗口或强刷避免缓存旧 `index-*.js`。
@@ -163,8 +169,8 @@ curl -s http://127.0.0.1/login | grep -oE '开发测试版|v1版本' | head -1
 
 1. **域名**：在域名注册商处把 **A 记录** 指到轻量实例的公网 IP（若用腾讯云 DNSPod，在控制台添加解析即可）。若域名需 **ICP 备案**，请按腾讯云备案流程完成后再开 80/443。  
 2. **服务器**：`/opt/forestry-toolbox-v2`（或你的目录）拉代码、配 `backend/.env.local` 或 systemd 的 `EnvironmentFile`。前端与站点**同源**时，构建使用仓库内 **`.env.production`** 的 **`/api`** 即可；若使用**独立 API 域名**，再在构建前将 `VITE_API_BASE` 设为 **`https://你的域名/api`**（与 Nginx 反代路径一致）。  
-3. **Nginx**：`root` 指向 `frontend/dist`，`location /api/` `proxy_pass` 到本机后端（如 `127.0.0.1:5000`）；参考仓库 `docs/nginx-forestry-example.conf`。  
-4. **HTTPS**：使用 **Let’s Encrypt**（`certbot --nginx -d 你的域名`）或腾讯云 SSL 证书托管，保证全站 HTTPS，便于定位与高德等能力。  
+3. **Nginx**：`root` 指向 `frontend/dist`，`location /api/` `proxy_pass` 到本机后端（如 `127.0.0.1:5000`）；HTTPS 生产环境参考 **`docs/nginx-https-production.example.conf`**（HTTP 内网示例见 `docs/nginx-forestry-example.conf`）。  
+4. **HTTPS**：使用 **Let’s Encrypt**（`certbot --nginx -d 你的域名`）或云厂商 SSL 证书，保证全站 HTTPS，便于定位与高德等能力；香港服务器一般无特殊限制，按常规 TLS 部署即可。  
 5. **防火墙**：轻量控制台「防火墙」放行 **80、443**；仅 SSH 时放行 22。
 
 这样用户长期访问的是 **`https://你的域名`**，稳定、可备案、可续期证书，与「本机开发时临时开隧道」是两种场景。

@@ -3,10 +3,11 @@ from sqlalchemy import inspect, text
 
 from .config import Config
 from .extensions import cors, db, jwt
-from .models import KnowledgeDoc, PlantIdentification, QAMessage, QASession, User
+from .models import KnowledgeDoc, PatrolSyncRecord, PlantIdentification, QAMessage, QASession, User
 from .routes.auth import INTERNAL_USERS, auth_bp
 from .routes.health import health_bp
 from .routes.identify import identify_bp
+from .routes.patrol import patrol_bp
 from .routes.qa import qa_bp
 
 
@@ -22,10 +23,16 @@ def create_app() -> Flask:
         supports_credentials=False,
     )
 
+    if app.config.get("FLASK_BEHIND_PROXY"):
+        from werkzeug.middleware.proxy_fix import ProxyFix
+
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+
     app.register_blueprint(health_bp, url_prefix="/api")
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
     app.register_blueprint(identify_bp, url_prefix="/api/identify")
     app.register_blueprint(qa_bp, url_prefix="/api/qa")
+    app.register_blueprint(patrol_bp, url_prefix="/api/patrol")
 
     with app.app_context():
         from . import models  # noqa: F401
@@ -96,6 +103,7 @@ def _purge_user_related_data() -> None:
     QAMessage.query.delete()
     QASession.query.delete()
     PlantIdentification.query.delete()
+    PatrolSyncRecord.query.delete()
     User.query.delete()
     db.session.commit()
 

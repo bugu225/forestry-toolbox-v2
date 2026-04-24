@@ -24,7 +24,7 @@ function resolveLoginError(error) {
     return "请求超时，请检查网络或稍后重试";
   }
   if (error?.request && !error?.response) {
-    return "网络异常：请检查服务器与 Nginx 是否可访问";
+    return "网络异常：请检查手机网络与站点是否可访问";
   }
   return "请求失败，请稍后重试";
 }
@@ -46,7 +46,7 @@ async function submit() {
 
 <template>
   <div class="page">
-    <h1 class="title">林业智能巡护助手 v1版本</h1>
+    <h1 class="title">林业百宝箱</h1>
     <van-form @submit="submit">
       <van-cell-group inset>
         <van-field v-model="form.username" name="username" label="用户名" required autocomplete="username" />
@@ -70,8 +70,8 @@ async function submit() {
 
 <style scoped>
 .page {
-  padding: 28px 16px 32px;
-  min-height: 100vh;
+  padding: 28px 16px calc(32px + env(safe-area-inset-bottom, 0));
+  min-height: 100dvh;
   box-sizing: border-box;
   background: #f7f8fa;
 }

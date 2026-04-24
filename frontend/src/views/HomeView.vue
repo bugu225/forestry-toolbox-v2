@@ -1,10 +1,12 @@
 <script setup>
-import { computed, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { storeToRefs } from "pinia";
 import { useRouter } from "vue-router";
 import { showToast } from "vant";
 import { useAuthStore } from "../stores/auth";
 import { useNetworkStore } from "../stores/network";
+
+const PWA_TIP_DISMISS_KEY = "ftb2_home_pwa_tip_dismissed";
 
 const authStore = useAuthStore();
 const networkStore = useNetworkStore();
@@ -22,6 +24,98 @@ const networkHint = computed(() => {
   }
   return effectiveOnline.value ? "当前网络：在线" : "当前网络：离线";
 });
+
+/** 是否已以「应用 / 主屏幕」方式打开（含 iOS 主屏幕图标启动） */
+const isStandaloneDisplay = computed(() => {
+  if (typeof window === "undefined") return false;
+  try {
+    if (window.matchMedia("(display-mode: standalone)").matches) return true;
+    if (window.matchMedia("(display-mode: fullscreen)").matches) return true;
+  } catch {
+    /* ignore */
+  }
+  if (typeof navigator !== "undefined" && navigator.standalone === true) return true;
+  return false;
+});
+
+const pwaTipDismissed = ref(false);
+/** Chromium：可弹出系统「安装」对话框 */
+const canNativeInstall = ref(false);
+let deferredInstallPrompt = null;
+let beforeInstallHandler = null;
+let appInstalledHandler = null;
+
+const ua = typeof navigator !== "undefined" ? navigator.userAgent || "" : "";
+const isIOS =
+  /iPhone|iPad|iPod/i.test(ua) ||
+  (typeof navigator !== "undefined" &&
+    navigator.platform === "MacIntel" &&
+    Number(navigator.maxTouchPoints) > 1);
+const isAndroid = /Android/i.test(ua);
+
+/** 仅在手机端展示「添加到主屏幕」提示 */
+const isPhoneBrowsing = computed(() => {
+  if (typeof navigator === "undefined") return false;
+  const u = navigator.userAgent || "";
+  if (/iPhone|iPad|iPod|Android|Mobile|webOS|BlackBerry|Opera Mini|IEMobile|HarmonyOS/i.test(u)) return true;
+  if (navigator.platform === "MacIntel" && Number(navigator.maxTouchPoints) > 1) return true;
+  return false;
+});
+
+/** 模板中不宜直接写 window，用计算属性避免构建/SSR 告警 */
+const showInsecureContextHint = computed(() => {
+  if (typeof window === "undefined") return false;
+  if (window.isSecureContext) return false;
+  const host = window.location?.hostname || "";
+  return host !== "localhost" && host !== "127.0.0.1";
+});
+
+const showPwaTip = computed(() => {
+  if (!isPhoneBrowsing.value) return false;
+  if (isStandaloneDisplay.value) return false;
+  if (pwaTipDismissed.value) return false;
+  return true;
+});
+
+const pwaHintBody = computed(() => {
+  if (isIOS) {
+    return "点 Safari 底栏「分享」图标，选择「添加到主屏幕」并确认。从主屏幕图标打开时，离线缓存与全屏体验更好。";
+  }
+  if (isAndroid) {
+    return canNativeInstall.value
+      ? "点击下方按钮可将本应用添加到手机桌面，打开后更接近原生应用，离线访问更稳定。"
+      : "点自带浏览器菜单（⋮，多在右上或底栏），选「添加到主屏幕」或「安装应用」。从主屏幕图标打开，离线用问答、识图、巡护更顺畅。";
+  }
+  return "点自带浏览器菜单（⋮），选「添加到主屏幕」或「安装应用」，固定到手机桌面，便于离线使用。";
+});
+
+function dismissPwaTip() {
+  pwaTipDismissed.value = true;
+  try {
+    localStorage.setItem(PWA_TIP_DISMISS_KEY, "1");
+  } catch {
+    /* ignore */
+  }
+}
+
+async function onNativeInstallClick() {
+  if (!deferredInstallPrompt) {
+    showToast({ message: "请点菜单（⋮）选择「安装」或「添加到主屏幕」", position: "middle" });
+    return;
+  }
+  try {
+    await deferredInstallPrompt.prompt();
+    const choice = await deferredInstallPrompt.userChoice;
+    deferredInstallPrompt = null;
+    canNativeInstall.value = false;
+    if (choice?.outcome === "accepted") {
+      showToast({ message: "已开始安装，请按系统提示完成", position: "middle" });
+      dismissPwaTip();
+    }
+  } catch {
+    showToast({ message: "安装流程被中断，可稍后在菜单中重试", position: "middle" });
+  }
+}
 
 function goQa() {
   router.push({ name: "qa" });
@@ -55,7 +149,7 @@ function requestLocationPermission() {
   }
   if (window.isSecureContext === false) {
     showToast({
-      message: "当前页面不是安全上下文，浏览器可能拒绝定位。请改用 HTTPS 或 localhost 访问。",
+      message: "当前不是安全访问（需 https），无法使用定位。请用 https 打开，或在开发时用本机调试地址。",
       position: "middle",
     });
     return;
@@ -67,7 +161,7 @@ function requestLocationPermission() {
     (error) => {
       const code = Number(error?.code || 0);
       if (code === 1) {
-        showToast({ message: "您已拒绝定位权限，请在系统或浏览器设置中手动开启。", position: "middle" });
+        showToast({ message: "您已拒绝定位，请到系统设置或本应用权限里开启定位。", position: "middle" });
         return;
       }
       if (code === 2) {
@@ -83,14 +177,70 @@ function requestLocationPermission() {
     { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
   );
 }
+
+onMounted(() => {
+  try {
+    pwaTipDismissed.value = localStorage.getItem(PWA_TIP_DISMISS_KEY) === "1";
+  } catch {
+    pwaTipDismissed.value = false;
+  }
+
+  beforeInstallHandler = (e) => {
+    e.preventDefault();
+    deferredInstallPrompt = e;
+    canNativeInstall.value = true;
+  };
+  window.addEventListener("beforeinstallprompt", beforeInstallHandler);
+  appInstalledHandler = () => {
+    deferredInstallPrompt = null;
+    canNativeInstall.value = false;
+    dismissPwaTip();
+  };
+  window.addEventListener("appinstalled", appInstalledHandler);
+});
+
+onUnmounted(() => {
+  if (beforeInstallHandler) {
+    window.removeEventListener("beforeinstallprompt", beforeInstallHandler);
+  }
+  if (appInstalledHandler) {
+    window.removeEventListener("appinstalled", appInstalledHandler);
+  }
+});
 </script>
 
 <template>
   <div class="page">
-    <van-nav-bar title="功能首页（v1）" />
+    <van-nav-bar title="首页" />
 
     <div class="home-main">
       <p class="welcome">你好，{{ username }}</p>
+
+      <div v-if="showPwaTip" class="pwa-card" role="region" aria-label="添加到主屏幕提示">
+        <div class="pwa-card-head">
+          <span class="pwa-card-title">添加到手机桌面</span>
+          <button type="button" class="pwa-card-close" aria-label="关闭提示" @click="dismissPwaTip">×</button>
+        </div>
+        <p class="pwa-card-desc">{{ pwaHintBody }}</p>
+        <p v-if="showInsecureContextHint" class="pwa-card-warn">
+          当前非 HTTPS，部分机型无法添加到桌面；正式使用请用 https 打开本页。
+        </p>
+        <div class="pwa-card-actions">
+          <van-button
+            v-if="canNativeInstall"
+            type="primary"
+            size="small"
+            round
+            class="pwa-install-btn"
+            @click="onNativeInstallClick"
+          >
+            一键添加到桌面
+          </van-button>
+          <van-button v-if="!canNativeInstall" type="default" size="small" round plain @click="dismissPwaTip">
+            我知道了
+          </van-button>
+        </div>
+      </div>
 
       <div class="entry-cards" role="navigation" aria-label="功能入口">
         <button type="button" class="entry-card entry-card--qa" @click="goQa">
@@ -131,7 +281,8 @@ function requestLocationPermission() {
 
 <style scoped>
 .page {
-  min-height: 100vh;
+  min-height: 100dvh;
+  padding-bottom: env(safe-area-inset-bottom, 0);
   background: #f0f2f5;
 }
 
@@ -149,6 +300,73 @@ function requestLocationPermission() {
   font-size: 15px;
   color: #646566;
   text-align: center;
+}
+
+.pwa-card {
+  background: linear-gradient(145deg, #e8f4ff 0%, #f0f9ff 100%);
+  border: 1px solid #b3d8ff;
+  border-radius: 12px;
+  padding: 14px 14px 12px;
+  box-shadow: 0 2px 10px rgba(25, 137, 250, 0.08);
+}
+
+.pwa-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.pwa-card-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1989fa;
+}
+
+.pwa-card-close {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.85);
+  color: #646566;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pwa-card-close:active {
+  opacity: 0.75;
+}
+
+.pwa-card-desc {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: #323233;
+}
+
+.pwa-card-warn {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #ed6a0c;
+}
+
+.pwa-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.pwa-install-btn {
+  min-width: 132px;
 }
 
 .entry-cards {

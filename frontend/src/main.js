@@ -5,11 +5,20 @@ import "vant/lib/index.css";
 
 import App from "./App.vue";
 import router from "./router";
+import { useNetworkStore } from "./stores/network";
 
 const app = createApp(App);
-app.use(createPinia());
+const pinia = createPinia();
+app.use(pinia);
 app.use(router);
 app.use(Vant);
+
+if (typeof window !== "undefined") {
+  const networkStore = useNetworkStore();
+  window.addEventListener("online", () => networkStore.setNavigatorOnline(true));
+  window.addEventListener("offline", () => networkStore.setNavigatorOnline(false));
+}
+
 app.mount("#app");
 
 if ("serviceWorker" in navigator) {
