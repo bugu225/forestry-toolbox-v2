@@ -1,7 +1,7 @@
 <script setup>
 import { computed, nextTick, onMounted, reactive, ref } from "vue";
 import { storeToRefs } from "pinia";
-import { showFailToast, showSuccessToast } from "vant";
+import { showFailToast, showNotify, showSuccessToast } from "vant";
 import apiClient, { IDENTIFY_SYNC_TIMEOUT_MS } from "../api/client";
 import { getCurrentPositionCompat } from "../utils/geolocation";
 import { useAuthStore } from "../stores/auth";
@@ -548,6 +548,14 @@ async function addChatAndIdentify(dataUrl, source, imageTitle, meta) {
         status: "success",
         synced: pickIdentifySnapshotForGallery(synced),
       });
+      if (String(synced.provider || "") === "unconfigured") {
+        showNotify({
+          type: "warning",
+          message:
+            "识图服务未配置：请在服务器 backend/.env.local 填写 PLANT_API_KEY、PLANT_API_SECRET 并重启后端。",
+          duration: 9000,
+        });
+      }
     }
   } catch (err) {
     const msg = formatIdentifyApiError(err);

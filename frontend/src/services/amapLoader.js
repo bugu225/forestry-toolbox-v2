@@ -1,12 +1,15 @@
 /**
- * 动态加载高德 JS API 2.0，使用项目环境变量中的 key 与安全码。
- * 构建时未注入时，可在线上为 dist/index.html 增加 meta（免重新 npm build）：
- * <meta name="forestry-amap-key" content="你的Web端Key" />
- * <meta name="forestry-amap-security" content="你的安全密钥" />
+ * 动态加载高德 JS API 2.0。
+ * Key 来源（按优先级）：Vite 环境变量 → index.html 的 meta → 同源 GET /api/public/client-config（由后端 .env 提供，免重建前端）。
  * @see https://lbs.amap.com/api/javascript-api-v2/guide/abc/load
  */
 const POLL_MS = 50;
 const POLL_MAX = 200;
+
+let runtimeFetchAttempted = false;
+let runtimeKey = "";
+let runtimeSecurity = "";
+let runtimeConfigFetchStatus = 0;
 
 function readMetaContent(name) {
   if (typeof document === "undefined") return "";
@@ -20,13 +23,23 @@ function readMetaContent(name) {
   }
 }
 
-export function loadAmap() {
+async function ensureRuntimeKeysFromApi() {
+  if (runtimeFetchAttempted || typeof fetch === "undefined" || typeof window === "undefined") return;
+  runtimeFetchAttempted = true;
+  try {
+    const r = await fetch("/api/public/client-config", { credentials: "same-origin" });
+    runtimeConfigFetchStatus = r.status || 0;
+    if (!r.ok) return;
+    const j = await r.json();
+    runtimeKey = String(j.amap_js_key || "").trim();
+    runtimeSecurity = String(j.amap_security_js_code || "").trim();
+  } catch {
+    /* 离线或反代未就绪时忽略 */
+  }
+}
+
+function loadScriptWithKey(key, securityJsCode) {
   return new Promise((resolve, reject) => {
-    const key =
-      String(import.meta.env.VITE_AMAP_JS_KEY || "").trim() || readMetaContent("forestry-amap-key");
-    const securityJsCode =
-      String(import.meta.env.VITE_AMAP_SECURITY_JS_CODE || "").trim() ||
-      readMetaContent("forestry-amap-security");
     if (!key || String(key).trim() === "") {
       reject(new Error("no_amap_key"));
       return;
@@ -72,4 +85,20 @@ export function loadAmap() {
     script.onerror = () => reject(new Error("amap_script_error"));
     document.head.appendChild(script);
   });
+}
+
+export async function loadAmap() {
+  await ensureRuntimeKeysFromApi();
+  const key =
+    String(import.meta.env.VITE_AMAP_JS_KEY || "").trim() ||
+    readMetaContent("forestry-amap-key") ||
+    runtimeKey;
+  const securityJsCode =
+    String(import.meta.env.VITE_AMAP_SECURITY_JS_CODE || "").trim() ||
+    readMetaContent("forestry-amap-security") ||
+    runtimeSecurity;
+  if (!key && runtimeConfigFetchStatus === 404) {
+    throw new Error("amap_runtime_config_404");
+  }
+  return loadScriptWithKey(key, securityJsCode);
 }

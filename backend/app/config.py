@@ -52,3 +52,9 @@ class Config:
     LLM_KNOWLEDGE_IMPORT_MAX_CHARS = int(os.getenv("LLM_KNOWLEDGE_IMPORT_MAX_CHARS", "14000"))
     THIRD_PARTY_TIMEOUT_SECONDS = int(os.getenv("THIRD_PARTY_TIMEOUT_SECONDS", "8"))
     THIRD_PARTY_RETRIES = int(os.getenv("THIRD_PARTY_RETRIES", "1"))
+    # 供前端高德地图运行时拉取（与 Vite 构建变量二选一即可；Web Key 通常已按域名白名单限制）
+    AMAP_JS_KEY = (os.getenv("AMAP_JS_KEY") or os.getenv("VITE_AMAP_JS_KEY") or "").strip()
+    AMAP_SECURITY_JS_CODE = (
+        os.getenv("AMAP_SECURITY_JS_CODE") or os.getenv("VITE_AMAP_SECURITY_JS_CODE") or ""
+    ).strip()
+    TIANDITU_JS_KEY = (os.getenv("TIANDITU_JS_KEY") or os.getenv("VITE_TIANDITU_JS_KEY") or "").strip()

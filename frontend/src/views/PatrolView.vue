@@ -5,7 +5,7 @@ import { storeToRefs } from "pinia";
 import { useNetworkStore } from "../stores/network";
 import { useAuthStore } from "../stores/auth";
 import apiClient, { API_READ_TIMEOUT_MS } from "../api/client";
-import { loadAmap } from "../services/amapLoader";
+import { loadTianditu } from "../services/tiandituLoader";
 import { deleteRecord, getAllRecords, putRecord, stores } from "../services/offlineDb";
 import { getCurrentPositionCompat } from "../utils/geolocation";
 
@@ -39,10 +39,6 @@ function eventTypeLabel(value) {
   return EVENT_TYPES.find((t) => t.value === value)?.label || value;
 }
 
-function eventTypeColor(value) {
-  return EVENT_TYPES.find((t) => t.value === value)?.color || "#646566";
-}
-
 function isValidLngLat(p) {
   const lng = Number(p?.lng);
   const lat = Number(p?.lat);
@@ -55,6 +51,8 @@ const points = ref([]);
 const events = ref([]);
 const samplingTimer = ref(null);
 const gpsBusy = ref(false);
+/** 保存事件 / 一键异常（勿与开始巡护的 gpsBusy 混用） */
+const eventSaveBusy = ref(false);
 const activeTab = ref(0);
 
 const showEventSheet = ref(false);
@@ -92,7 +90,7 @@ const sortModeLabel = computed(() => {
 
 const amapDivRef = ref(null);
 const mapError = ref("");
-let AMapCtor = null;
+let TMapCtor = null;
 let mapInst = null;
 let polylineInst = null;
 const eventMarkers = [];
@@ -117,6 +115,7 @@ const SORT_SHEET_VALUES = ["time_desc", "time_asc", "type"];
 
 const pullSheetVisible = ref(false);
 const pullSheetItems = ref([]);
+const quickEventSheetVisible = ref(false);
 
 const pullSheetActionRows = computed(() =>
   pullSheetItems.value.map((it) => ({
@@ -150,14 +149,14 @@ watch(
 function clearMapOverlays() {
   if (!mapInst) return;
   if (polylineInst) {
-    mapInst.remove(polylineInst);
+    mapInst.removeOverLay(polylineInst);
     polylineInst = null;
   }
   for (const m of eventMarkers.splice(0)) {
-    mapInst.remove(m);
+    mapInst.removeOverLay(m);
   }
   if (playbackMarker) {
-    mapInst.remove(playbackMarker);
+    mapInst.removeOverLay(playbackMarker);
     playbackMarker = null;
   }
 }
@@ -173,61 +172,49 @@ function destroyMap() {
     }
     mapInst = null;
   }
-  AMapCtor = null;
+  TMapCtor = null;
 }
 
-function buildEventMarkerHtml(type) {
-  const c = eventTypeColor(type);
-  return `<div style="width:26px;height:26px;border-radius:50%;background:${c};border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.35);"></div>`;
+function toTLngLat(row) {
+  return new TMapCtor.LngLat(Number(row.lng), Number(row.lat));
 }
 
 function redrawMapLayers() {
-  if (!mapInst || !AMapCtor) return;
+  if (!mapInst || !TMapCtor) return;
   clearMapOverlays();
   const pathArr = orderedPoints.value;
-  const path = pathArr.map((p) => [Number(p.lng), Number(p.lat)]);
+  const path = pathArr.map((p) => toTLngLat(p));
 
   if (path.length >= 2) {
-    polylineInst = new AMapCtor.Polyline({
-      path,
-      strokeColor: "#07c160",
-      strokeWeight: 6,
-      strokeOpacity: 0.92,
-      lineJoin: "round",
-      lineCap: "round",
-      zIndex: 50,
+    polylineInst = new TMapCtor.Polyline(path, {
+      color: "#07c160",
+      weight: 6,
+      opacity: 0.92,
+      lineStyle: "solid",
     });
-    mapInst.add(polylineInst);
-    mapInst.setFitView([polylineInst], false, [40, 40, 40, 40]);
+    mapInst.addOverLay(polylineInst);
+    if (typeof mapInst.setViewport === "function") {
+      mapInst.setViewport(path);
+    }
   } else if (path.length === 1) {
-    mapInst.setZoomAndCenter(16, path[0]);
+    mapInst.centerAndZoom(path[0], 16);
   }
 
   for (const ev of events.value) {
     if (!isValidLngLat(ev)) continue;
-    const mk = new AMapCtor.Marker({
-      position: [Number(ev.lng), Number(ev.lat)],
-      content: buildEventMarkerHtml(ev.type),
-      offset: new AMapCtor.Pixel(-13, -13),
-      title: `${eventTypeLabel(ev.type)} ${ev.note || ""}`,
-      zIndex: 80,
-    });
-    mapInst.add(mk);
+    const mk = new TMapCtor.Marker(toTLngLat(ev));
+    mk.setTitle(`${eventTypeLabel(ev.type)} ${ev.note || ""}`.trim());
+    mapInst.addOverLay(mk);
     eventMarkers.push(mk);
   }
 
   const idx = playbackIndex.value;
   if (path.length && idx >= 0 && idx < path.length) {
     const pos = path[idx];
-    playbackMarker = new AMapCtor.Marker({
-      position: pos,
-      content:
-        '<div style="width:14px;height:14px;border-radius:50%;background:#fff;border:3px solid #07c160;box-shadow:0 0 0 2px rgba(7,193,96,.35);"></div>',
-      offset: new AMapCtor.Pixel(-7, -7),
-      zIndex: 100,
-    });
-    mapInst.add(playbackMarker);
-    mapInst.setCenter(pos);
+    playbackMarker = new TMapCtor.Marker(pos);
+    playbackMarker.setTitle("轨迹回放当前位置");
+    mapInst.addOverLay(playbackMarker);
+    mapInst.panTo(pos);
   }
 }
 
@@ -238,17 +225,18 @@ async function initAmapIfNeeded() {
     return;
   }
   try {
-    AMapCtor = await loadAmap();
+    TMapCtor = await loadTianditu();
   } catch (e) {
     const code = e?.message || "";
-    if (code === "no_amap_key") {
+    if (code === "no_tianditu_key") {
       mapError.value =
-        "未配置高德 Key：请在构建环境变量 VITE_AMAP_JS_KEY 中配置，或在 index.html 的 <head> 内增加 meta forestry-amap-key / forestry-amap-security 后刷新页面。";
+        "未配置天地图 Key：请在服务器 backend/.env.local 中设置 TIANDITU_JS_KEY，或在 index.html 的 <head> 内增加 meta forestry-tianditu-key 后刷新页面。";
     }
-    else if (code === "amap_load_timeout") mapError.value = "高德脚本加载超时，请检查网络或安全域名配置";
-    else if (code === "amap_script_error") mapError.value = "高德脚本加载失败（网络或被拦截）";
-    else if (code === "amap_load_failed") mapError.value = "高德脚本已返回但未暴露 AMap，请核对 Key 与版本";
-    else mapError.value = "高德地图加载失败";
+    else if (code === "tianditu_runtime_config_404") {
+      mapError.value = "后端未提供 /api/public/client-config（疑似服务器未更新到最新代码），请先在服务器 git pull 并重启后端。";
+    }
+    else if (code === "tianditu_load_timeout") mapError.value = "天地图脚本加载超时，请检查网络或域名白名单配置";
+    else mapError.value = "天地图加载失败";
     return;
   }
   await nextTick();
@@ -262,11 +250,8 @@ async function initAmapIfNeeded() {
     center = [Number(last.lng), Number(last.lat)];
     zoom = 15;
   }
-  mapInst = new AMapCtor.Map(el, {
-    zoom,
-    center,
-    viewMode: "2D",
-  });
+  mapInst = new TMapCtor.Map(el);
+  mapInst.centerAndZoom(new TMapCtor.LngLat(center[0], center[1]), zoom);
   redrawMapLayers();
   requestAnimationFrame(() => {
     try {
@@ -541,6 +526,78 @@ async function toggleEventRecording() {
   }, MAX_AUDIO_MS);
 }
 
+/** 25 分钟内最近一次有效轨迹点，用于定位失败时仍能记事件 */
+function coordinatesFromLastPointOrNull() {
+  const sorted = [...points.value].sort((a, b) => (b.recorded_at || 0) - (a.recorded_at || 0));
+  const last = sorted[0];
+  if (!last) return null;
+  const age = Date.now() - (last.recorded_at || 0);
+  if (age > 25 * 60 * 1000) return null;
+  const lat = Number(last.lat);
+  const lng = Number(last.lng);
+  if (!isValidLngLat({ lat, lng })) return null;
+  return { lat, lng };
+}
+
+async function resolveCoordsForEvent() {
+  const fromPoint = coordinatesFromLastPointOrNull();
+  if (fromPoint) return fromPoint;
+  const pos = await getPositionOnce();
+  const lat = Number(pos.coords.latitude);
+  const lng = Number(pos.coords.longitude);
+  if (!isValidLngLat({ lat, lng })) throw new Error("bad_coord");
+  return { lat, lng };
+}
+
+async function persistPatrolEvent({ lat, lng, type, note, photo, audio }) {
+  if (!activeTask.value) return;
+  const rec = {
+    local_id: uid("pevt"),
+    task_local_id: activeTask.value.local_id,
+    type,
+    lat,
+    lng,
+    note: (note || "").trim(),
+    photo_dataurl: photo || null,
+    audio_dataurl: audio || null,
+    recorded_at: Date.now(),
+  };
+  await putRecord(stores.patrolEvents, rec);
+  await loadPointsAndEvents(activeTask.value.local_id);
+}
+
+async function quickRecordAnomaly() {
+  if (!activeTask.value) {
+    showFailToast("请先开始巡护");
+    return;
+  }
+  quickEventSheetVisible.value = true;
+}
+
+async function onQuickEventSelect(action) {
+  const type = action?.value || EVENT_TYPES.find((t) => t.label === action?.name)?.value;
+  if (!type) return;
+
+  eventSaveBusy.value = true;
+  try {
+    const { lat, lng } = await resolveCoordsForEvent();
+    await persistPatrolEvent({
+      lat,
+      lng,
+      type,
+      note: "一键记录异常",
+      photo: null,
+      audio: null,
+    });
+    activeTab.value = 1;
+    showSuccessToast("已保存到「事件」页");
+  } catch {
+    showFailToast("未取得坐标：请等待轨迹采样后重试，或使用「记录事件」");
+  } finally {
+    eventSaveBusy.value = false;
+  }
+}
+
 function openEventSheet() {
   if (!activeTask.value) {
     showFailToast("请先开始巡护");
@@ -577,41 +634,24 @@ function onPhotoPick(ev) {
 async function saveEvent() {
   if (!activeTask.value) return;
   stopRecordingInternal();
-  gpsBusy.value = true;
-  let lat = null;
-  let lng = null;
+  eventSaveBusy.value = true;
   try {
-    const pos = await getPositionOnce();
-    lat = Number(pos.coords.latitude);
-    lng = Number(pos.coords.longitude);
+    const { lat, lng } = await resolveCoordsForEvent();
+    await persistPatrolEvent({
+      lat,
+      lng,
+      type: eventType.value,
+      note: (eventNote.value || "").trim(),
+      photo: eventPhotoDataUrl.value || null,
+      audio: eventAudioDataUrl.value || null,
+    });
+    showEventSheet.value = false;
+    showSuccessToast("事件已保存");
   } catch {
-    showFailToast("无法获取当前位置，事件未保存");
-    gpsBusy.value = false;
-    return;
+    showFailToast("无法获取有效位置，事件未保存（可先走几步产生轨迹点再试）");
+  } finally {
+    eventSaveBusy.value = false;
   }
-  if (!isValidLngLat({ lat, lng })) {
-    showFailToast("定位坐标无效，事件未保存");
-    gpsBusy.value = false;
-    return;
-  }
-  gpsBusy.value = false;
-  const photo = eventPhotoDataUrl.value || null;
-  const audio = eventAudioDataUrl.value || null;
-  const rec = {
-    local_id: uid("pevt"),
-    task_local_id: activeTask.value.local_id,
-    type: eventType.value,
-    lat,
-    lng,
-    note: (eventNote.value || "").trim(),
-    photo_dataurl: photo,
-    audio_dataurl: audio,
-    recorded_at: Date.now(),
-  };
-  await putRecord(stores.patrolEvents, rec);
-  await loadPointsAndEvents(activeTask.value.local_id);
-  showEventSheet.value = false;
-  showSuccessToast("事件已保存");
 }
 
 function currentTaskId() {
@@ -819,8 +859,8 @@ onUnmounted(() => {
       <van-tab title="巡护">
         <div class="panel">
           <p class="hint">
-            轨迹与事件保存在本机 IndexedDB；联网且已登录时可同步到服务端。地图页使用高德 JS（需构建变量
-            VITE_AMAP_JS_KEY 与安全码，或为已部署的 index.html 注入 meta forestry-amap-key）。
+            轨迹与事件保存在本机 IndexedDB；联网且已登录时可同步到服务端。地图页使用天地图 JS（需配置
+            TIANDITU_JS_KEY，或为已部署的 index.html 注入 meta forestry-tianditu-key）。
           </p>
 
           <div v-if="activeTask" class="status-chip">
@@ -836,6 +876,9 @@ onUnmounted(() => {
             </van-button>
             <template v-if="activeTask">
               <van-button type="warning" block plain @click="openEventSheet">记录事件</van-button>
+              <van-button type="primary" block plain :loading="eventSaveBusy" @click="quickRecordAnomaly">
+                一键记录异常
+              </van-button>
               <van-button type="danger" block plain @click="stopPatrol">结束巡护</van-button>
               <van-button type="default" block @click="exportPatrolJson">导出本次 JSON</van-button>
             </template>
@@ -901,17 +944,20 @@ onUnmounted(() => {
       <van-tab title="地图">
         <div class="panel">
           <p class="hint">
-            高德地图展示轨迹折线与按类型着色的事件点；下方滑块与播放用于沿轨迹回放。
+            天地图展示轨迹折线与事件点；下方滑块与播放用于沿轨迹回放。
             <span v-if="!effectiveOnline" class="warn">离线时瓦片可能无法加载。</span>
+          </p>
+          <p class="map-disclaimer">
+            地图数据与底图服务由天地图提供。页面仅用于巡护辅助展示与定位记录，不涉及任何行政区划主张。
           </p>
           <div v-if="mapError" class="map-fallback">
             <p>{{ mapError }}</p>
             <p v-if="mapError.includes('超时') || mapError.includes('脚本')" class="sub">
-              请检查网络、高德控制台域名白名单及安全码配置。
+              请检查网络、天地图控制台域名白名单与 Key 配置。
             </p>
             <p v-else class="sub">
-              可在构建用 .env 中配置 VITE_AMAP_JS_KEY、VITE_AMAP_SECURITY_JS_CODE；或在当前页的 index.html 增加 meta
-              forestry-amap-key / forestry-amap-security 后强刷，无需重新 npm build。
+              可在服务器 backend/.env.local 中配置 TIANDITU_JS_KEY；或在当前页 index.html 增加 meta
+              forestry-tianditu-key 后强刷，无需重新 npm build。
             </p>
           </div>
           <div ref="amapDivRef" class="amap-box" />
@@ -951,6 +997,16 @@ onUnmounted(() => {
       @select="onPullSheetSelect"
     />
 
+    <van-action-sheet
+      v-model:show="quickEventSheetVisible"
+      title="一键记录异常"
+      description="优先使用最近轨迹点坐标；若无轨迹点则尝试实时定位。"
+      :actions="EVENT_TYPES.map((t) => ({ name: t.label, value: t.value, color: t.color }))"
+      close-on-click-action
+      cancel-text="取消"
+      @select="onQuickEventSelect"
+    />
+
     <van-popup v-model:show="showEventSheet" position="bottom" round :style="{ padding: '16px' }">
       <h3 class="sheet-title">记录事件</h3>
       <van-radio-group v-model="eventType" direction="horizontal" class="type-row">
@@ -973,7 +1029,7 @@ onUnmounted(() => {
       </div>
       <div class="sheet-actions">
         <van-button block type="default" @click="showEventSheet = false">取消</van-button>
-        <van-button block type="primary" :loading="gpsBusy" @click="saveEvent">保存</van-button>
+        <van-button block type="primary" :loading="eventSaveBusy" @click="saveEvent">保存</van-button>
       </div>
     </van-popup>
   </div>
@@ -1105,6 +1161,17 @@ onUnmounted(() => {
   margin: 8px 0 0;
   font-size: 12px;
   color: #969799;
+}
+
+.map-disclaimer {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #646566;
+  background: #f7f8fa;
+  border: 1px solid #ebedf0;
+  border-radius: 8px;
 }
 
 .playback-bar {

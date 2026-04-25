@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 import { useRoute, useRouter } from "vue-router";
-import { showFailToast, showSuccessToast } from "vant";
+import { showFailToast, showNotify, showSuccessToast } from "vant";
 import apiClient, { API_READ_TIMEOUT_MS, QA_ASK_TIMEOUT_MS } from "../api/client";
 import { deleteRecord, getAllRecords, putRecord, stores } from "../services/offlineDb";
 import { useNetworkStore } from "../stores/network";
@@ -608,6 +608,15 @@ async function sendChatMessage() {
 
     await nextTick();
     scrollChatToBottom();
+
+    if (data.provider === "fallback-local") {
+      showNotify({
+        type: "warning",
+        message:
+          "当前为服务器占位回答：请在服务器 backend/.env.local 配置 LLM_API_KEY、LLM_API_BASE_URL 并重启后端，即可使用联网大模型。",
+        duration: 8000,
+      });
+    }
   } catch (error) {
     const message = formatQaAskFailure(error);
     showFailToast(message);
