@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import { storeToRefs } from "pinia";
 import { useRouter } from "vue-router";
 import { showDialog, showToast } from "vant";
-import { getCurrentPositionCompat } from "../utils/geolocation";
+import { describeGeoError, getCurrentPositionCompat } from "../utils/geolocation";
 import { useAuthStore } from "../stores/auth";
 import { useNetworkStore } from "../stores/network";
 
@@ -186,37 +186,74 @@ function requestLocationPermission() {
     showToast({ message: "当前设备不支持定位能力", position: "middle" });
     return;
   }
-  if (window.isSecureContext === false) {
-    showToast({
-      message: "当前不是安全访问（需 https），无法使用定位。请用 https 打开，或在开发时用本机调试地址。",
-      position: "middle",
-    });
-    return;
-  }
   getCurrentPositionCompat()
     .then(() => {
-      showToast({ message: "已获取到位置（或网络定位），巡护与拍摄信息可自动填经纬度。", position: "middle" });
+      showToast({
+        message: "已获取到位置（GPS 或网络定位），巡护与拍摄可自动填经纬度。",
+        position: "middle",
+      });
     })
     .catch((error) => {
-      const code = Number(error?.code || 0);
-      if (code === 1) {
-        showToast({
-          message:
-            "定位仍被拒或未生效：请在浏览器「站点信息」里允许定位；若已允许，请完全关闭浏览器再打开，或清除本站数据后重新授权。",
-          position: "middle",
-        });
-        return;
-      }
-      if (code === 2) {
-        showToast({ message: "定位不可用，请检查手机定位服务（GPS）是否开启。", position: "middle" });
-        return;
-      }
-      if (code === 3) {
-        showToast({ message: "定位仍超时：请到室外或窗边重试，或在巡护/拍摄信息里手动填写经纬度。", position: "middle" });
-        return;
-      }
-      showToast({ message: "定位权限申请失败，请稍后重试。", position: "middle" });
+      showToast({ message: describeGeoError(error, "定位申请失败，请稍后重试"), position: "middle" });
     });
+}
+
+async function showLocationDiagnostics() {
+  const lines = [];
+  const secure = typeof window !== "undefined" ? Boolean(window.isSecureContext) : false;
+  const onlineState = effectiveOnline.value ? "在线" : "离线";
+  const hasGeo = typeof navigator !== "undefined" && Boolean(navigator.geolocation);
+  const uaText = typeof navigator !== "undefined" ? String(navigator.userAgent || "") : "";
+  const isChrome = /Chrome\/\d+/i.test(uaText);
+  const isAndroidChrome = isChrome && /Android/i.test(uaText);
+
+  lines.push(`网络状态：${onlineState}`);
+  lines.push(`安全上下文（HTTPS）：${secure ? "是" : "否"}`);
+  lines.push(`浏览器定位能力：${hasGeo ? "支持" : "不支持"}`);
+  lines.push(`浏览器识别：${isAndroidChrome ? "Android Chrome" : isChrome ? "Chrome 系" : "其他"}`);
+
+  if (navigator.permissions?.query) {
+    try {
+      const status = await navigator.permissions.query({ name: "geolocation" });
+      lines.push(`定位权限状态：${status?.state || "unknown"}`);
+    } catch {
+      lines.push("定位权限状态：浏览器不返回（正常）");
+    }
+  } else {
+    lines.push("定位权限状态：当前浏览器不支持 Permissions API");
+  }
+
+  if (!hasGeo) {
+    lines.push("实时定位测试：失败（浏览器不支持 geolocation）");
+  } else {
+    try {
+      const pos = await getCurrentPositionCompat();
+      const lat = Number(pos?.coords?.latitude);
+      const lng = Number(pos?.coords?.longitude);
+      const acc = Number(pos?.coords?.accuracy);
+      lines.push(
+        `实时定位测试：成功（经度 ${Number.isFinite(lng) ? lng.toFixed(5) : "—"}，纬度 ${
+          Number.isFinite(lat) ? lat.toFixed(5) : "—"
+        }，精度约 ${Number.isFinite(acc) ? Math.round(acc) : "—"}m）`
+      );
+    } catch (error) {
+      lines.push(`实时定位测试：失败（${describeGeoError(error, "未知错误")}）`);
+    }
+  }
+
+  lines.push("");
+  lines.push("建议：");
+  lines.push("1. 手机系统里开启“高精度定位（GPS+WLAN+移动网络）”；");
+  lines.push("2. 关闭省电模式，给 Chrome 允许“位置信息”权限；");
+  lines.push("3. 首次定位尽量在室外或窗边等待 10-20 秒；");
+  lines.push("4. 若仍失败，可在巡护页开启“高德 IP 顶替 GPS”（城市级粗定位）。");
+
+  showDialog({
+    title: "定位诊断",
+    message: lines.join("\n"),
+    confirmButtonText: "我知道了",
+    messageAlign: "left",
+  });
 }
 
 onMounted(() => {
@@ -313,6 +350,7 @@ onUnmounted(() => {
               </template>
             </van-cell>
             <van-button type="primary" plain block @click="requestLocationPermission">申请定位权限</van-button>
+            <van-button type="default" plain block @click="showLocationDiagnostics">定位诊断</van-button>
             <p class="more-line muted">
               若需用高德 IP 顶替 GPS（城市级粗定位），请在「巡护助手」页打开「高德 IP 顶替 GPS」开关。
             </p>

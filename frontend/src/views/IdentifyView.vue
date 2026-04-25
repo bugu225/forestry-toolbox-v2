@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, reactive, ref } from "vue";
 import { storeToRefs } from "pinia";
 import { showFailToast, showNotify, showSuccessToast } from "vant";
 import apiClient, { IDENTIFY_SYNC_TIMEOUT_MS } from "../api/client";
-import { getCurrentPositionCompat } from "../utils/geolocation";
+import { describeGeoError, getCurrentPositionCompat } from "../utils/geolocation";
 import { useAuthStore } from "../stores/auth";
 import { useNetworkStore } from "../stores/network";
 import { deleteRecord, getAllRecords, getRecord, putRecord, stores } from "../services/offlineDb";
@@ -365,20 +365,7 @@ function applyCurrentTimeToMeta() {
 }
 
 function formatGeoError(error, fallback = "获取位置失败，可手动输入经纬度") {
-  const code = Number(error?.code || 0);
-  if (code === 1) {
-    return "定位权限未生效：请在浏览器站点设置中允许定位；若已允许，请完全关闭浏览器再打开，或清除本站数据后重新授权。";
-  }
-  if (code === 2) {
-    return "定位不可用：请确认手机定位服务（GPS）已开启，并在室外或网络较好环境重试。";
-  }
-  if (code === 3) {
-    return "定位超时：请稍后重试，或关闭省电模式后再试。";
-  }
-  if (window.isSecureContext === false) {
-    return "当前不是安全访问（需 https），无法使用定位。请用 https 打开，或在开发时用本机调试地址。";
-  }
-  return fallback;
+  return describeGeoError(error, fallback);
 }
 
 function fillCurrentLocation() {

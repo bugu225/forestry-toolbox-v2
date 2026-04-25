@@ -6,7 +6,7 @@ import { useNetworkStore } from "../stores/network";
 import { loadTianditu } from "../services/tiandituLoader";
 import { locateByAmapIp } from "../services/amapIpLocate";
 import { deleteRecord, getAllRecords, putRecord, stores } from "../services/offlineDb";
-import { getCurrentPositionCompat } from "../utils/geolocation";
+import { describeGeoError, getCurrentPositionCompat } from "../utils/geolocation";
 
 const networkStore = useNetworkStore();
 const { effectiveOnline } = storeToRefs(networkStore);
@@ -404,10 +404,7 @@ async function recordSamplePoint() {
       showToast("高德 IP 定位失败，轨迹点未记录");
       return;
     }
-    const code = Number(e?.code || 0);
-    if (code === 1) showToast("定位被拒绝，轨迹点未记录");
-    else if (code === 3) showToast("定位超时，轨迹点未记录");
-    else showToast("定位失败，轨迹点未记录");
+    showToast(`${describeGeoError(e, "定位失败")}，轨迹点未记录`);
   }
 }
 
@@ -448,16 +445,7 @@ async function startPatrol() {
       showFailToast("高德 IP 定位失败，无法开始巡护（请检查网络与高德 Key）");
       return;
     }
-    const code = Number(e?.code ?? 0);
-    if (code === 1) {
-      showFailToast(
-        "定位权限未生效：请在浏览器「站点设置」中允许定位；若已允许，请完全关闭浏览器再打开，或清除本站数据后重新授权。"
-      );
-    } else if (code === 2 || code === 3) {
-      showFailToast("暂时无法获取坐标：请到室外或窗边重试，并确认系统定位/GPS 已开启。");
-    } else {
-      showFailToast("无法开始巡护：请确认浏览器支持定位且使用 HTTPS 打开本站。");
-    }
+    showFailToast(describeGeoError(e, "无法开始巡护"));
     return;
   } finally {
     gpsBusy.value = false;
