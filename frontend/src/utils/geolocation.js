@@ -39,6 +39,24 @@ function sleep(ms) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+function withTimeout(promise, ms, code = 3, reason = "geo_overall_timeout") {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      reject(Object.assign(new Error(reason), { code }));
+    }, ms);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        window.clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+
 async function assertPermissionNotDenied() {
   if (!navigator.permissions?.query) return;
   try {
@@ -84,31 +102,34 @@ export async function getCurrentPositionCompat() {
 
   await assertPermissionNotDenied();
 
-  // 先拿可用坐标，再争取更高精度；总时长控制在移动端可接受范围。
-  const quickCached = { enableHighAccuracy: false, maximumAge: 5 * 60 * 1000, timeout: 12000 };
-  const networkFresh = { enableHighAccuracy: false, maximumAge: 0, timeout: 18000 };
-  const gpsFresh = { enableHighAccuracy: true, maximumAge: 0, timeout: 22000 };
-  const watchNetwork = { enableHighAccuracy: false, maximumAge: 0, timeout: 30000 };
-  const watchGps = { enableHighAccuracy: true, maximumAge: 0, timeout: 32000 };
+  // 防止“一直加载”：总等待时长硬限制在 28s 内。
+  return withTimeout(
+    (async () => {
+      // 优先 GPS（你的场景更需要真实轨迹），再降级网络定位。
+      const quickCached = { enableHighAccuracy: false, maximumAge: 2 * 60 * 1000, timeout: 4000 };
+      const gpsFresh = { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 };
+      const networkFresh = { enableHighAccuracy: false, maximumAge: 0, timeout: 15000 };
+      const watchGps = { enableHighAccuracy: true, maximumAge: 0, timeout: 18000 };
 
-  const attempts = [
-    () => getCurrentPositionOnce(quickCached),
-    () => getCurrentPositionOnce(networkFresh),
-    () => getCurrentPositionOnce(gpsFresh),
-    () => watchPositionOnce(watchNetwork, 18000),
-    () => watchPositionOnce(watchGps, 20000),
-  ];
+      const attempts = [
+        () => getCurrentPositionOnce(quickCached),
+        () => getCurrentPositionOnce(gpsFresh),
+        () => getCurrentPositionOnce(networkFresh),
+        () => watchPositionOnce(watchGps, 12000),
+      ];
 
-  let lastErr = null;
-  for (let i = 0; i < attempts.length; i += 1) {
-    try {
-      return await attempts[i]();
-    } catch (err) {
-      lastErr = err;
-      if (Number(err?.code || 0) === 1) throw err;
-      // 给定位芯片一点恢复时间，避免连续 timeout。
-      await sleep(i < 2 ? 250 : 450);
-    }
-  }
-  throw lastErr || Object.assign(new Error("geo_failed"), { code: 0 });
+      let lastErr = null;
+      for (let i = 0; i < attempts.length; i += 1) {
+        try {
+          return await attempts[i]();
+        } catch (err) {
+          lastErr = err;
+          if (Number(err?.code || 0) === 1) throw err;
+          await sleep(250);
+        }
+      }
+      throw lastErr || Object.assign(new Error("geo_failed"), { code: 0 });
+    })(),
+    28000
+  );
 }

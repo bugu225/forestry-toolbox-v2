@@ -97,7 +97,8 @@ const eventMarkers = [];
 let playbackMarker = null;
 let currentPosMarker = null;
 let playbackTimer = null;
-const mapType = ref("vector");
+const mapType = ref("hybrid");
+const latestDeviceCoord = ref(null);
 
 const playbackIndex = ref(0);
 const playbackPlaying = ref(false);
@@ -249,7 +250,12 @@ function redrawMapLayers() {
     mapInst.panTo(pos);
   }
 
-  if (path.length) {
+  const selfPos = latestDeviceCoord.value;
+  if (isValidLngLat(selfPos)) {
+    currentPosMarker = new TMapCtor.Marker(toTLngLat(selfPos));
+    currentPosMarker.setTitle(`我的当前位置（${selfPos.source === "amap_ip" ? "高德 IP 粗定位" : "GPS"}）`);
+    mapInst.addOverLay(currentPosMarker);
+  } else if (path.length) {
     const lastPos = path[path.length - 1];
     currentPosMarker = new TMapCtor.Marker(lastPos);
     currentPosMarker.setTitle("我的当前位置（最近轨迹点）");
@@ -366,6 +372,7 @@ function clearSamplingTimer() {
 async function resolvePositionOnce() {
   if (useAmapIpForGps.value) {
     const row = await locateByAmapIp();
+    latestDeviceCoord.value = { lat: Number(row.lat), lng: Number(row.lng), source: "amap_ip" };
     return {
       coords: {
         latitude: Number(row.lat),
@@ -375,7 +382,13 @@ async function resolvePositionOnce() {
       timestamp: Date.now(),
     };
   }
-  return getCurrentPositionCompat();
+  const pos = await getCurrentPositionCompat();
+  latestDeviceCoord.value = {
+    lat: Number(pos?.coords?.latitude),
+    lng: Number(pos?.coords?.longitude),
+    source: "gps",
+  };
+  return pos;
 }
 
 async function recordSamplePoint() {
@@ -752,8 +765,7 @@ onUnmounted(() => {
     <div class="panel patrol-one">
       <p class="hint">
         轨迹与事件保存在本机 IndexedDB。地图使用天地图 JS（需配置 TIANDITU_JS_KEY，或在已部署的 index.html 注入 meta
-        forestry-tianditu-key）。开启「高德 IP 顶替 GPS」后，采样与事件坐标均来自高德 IP 粗定位（约城市级），关闭则使用浏览器
-        GPS。
+        forestry-tianditu-key）。
       </p>
 
       <div v-if="activeTask" class="status-chip">
@@ -774,14 +786,6 @@ onUnmounted(() => {
         </template>
       </div>
 
-      <van-cell-group inset class="block">
-        <van-cell title="高德 IP 顶替 GPS" label="开启后本页轨迹采样与事件定位均用高德 IP，关闭则用 GPS" center>
-          <template #value>
-            <van-switch v-model="useAmapIpForGps" size="20px" />
-          </template>
-        </van-cell>
-      </van-cell-group>
-
       <h3 class="section-title">地图</h3>
       <p class="hint tight">
         展示轨迹折线与事件点；下方滑块与播放用于沿轨迹回放。
@@ -790,10 +794,6 @@ onUnmounted(() => {
       <p class="map-disclaimer">
         地图数据与底图服务由天地图提供。页面仅用于巡护辅助展示与定位记录，不涉及任何行政区划主张。
       </p>
-      <div class="map-type-row">
-        <van-button size="small" :type="mapType === 'vector' ? 'primary' : 'default'" @click="mapType = 'vector'">矢量</van-button>
-        <van-button size="small" :type="mapType === 'hybrid' ? 'primary' : 'default'" @click="mapType = 'hybrid'">卫星影像</van-button>
-      </div>
       <div v-if="mapError" class="map-fallback">
         <p>{{ mapError }}</p>
         <p v-if="mapError.includes('超时') || mapError.includes('脚本')" class="sub">
@@ -930,12 +930,6 @@ onUnmounted(() => {
 
 .section-title:first-of-type {
   margin-top: 4px;
-}
-
-.map-type-row {
-  display: flex;
-  gap: 10px;
-  margin-bottom: 10px;
 }
 
 .sort-row {
