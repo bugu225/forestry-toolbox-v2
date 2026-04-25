@@ -4,7 +4,6 @@ import { storeToRefs } from "pinia";
 import { useRouter } from "vue-router";
 import { showDialog, showToast } from "vant";
 import { getCurrentPositionCompat } from "../utils/geolocation";
-import { locateByAmapIp } from "../services/amapIpLocate";
 import { useAuthStore } from "../stores/auth";
 import { useNetworkStore } from "../stores/network";
 
@@ -220,23 +219,6 @@ function requestLocationPermission() {
     });
 }
 
-async function requestAmapIpFallback() {
-  try {
-    const row = await locateByAmapIp();
-    showDialog({
-      title: "高德 IP 备用定位",
-      message: `城市级定位：${row.city}\n经度 ${row.lng.toFixed(4)}，纬度 ${row.lat.toFixed(4)}\n提示：该方式为 IP 粗定位，误差通常较大，仅作应急参考。`,
-      confirmButtonText: "知道了",
-      messageAlign: "left",
-    });
-  } catch {
-    showToast({
-      message: "IP 定位失败：请检查网络，或确认服务器已配置 AMAP_JS_KEY。",
-      position: "middle",
-    });
-  }
-}
-
 onMounted(() => {
   try {
     pwaTipDismissed.value = localStorage.getItem(PWA_TIP_DISMISS_KEY) === "1";
@@ -331,7 +313,9 @@ onUnmounted(() => {
               </template>
             </van-cell>
             <van-button type="primary" plain block @click="requestLocationPermission">申请定位权限</van-button>
-            <van-button type="default" plain block @click="requestAmapIpFallback">高德 IP 备用定位（粗略）</van-button>
+            <p class="more-line muted">
+              若需用高德 IP 顶替 GPS（城市级粗定位），请在「巡护助手」页打开「高德 IP 顶替 GPS」开关。
+            </p>
             <van-button class="more-logout" type="danger" block round @click="logout">退出登录</van-button>
           </div>
         </van-collapse-item>
