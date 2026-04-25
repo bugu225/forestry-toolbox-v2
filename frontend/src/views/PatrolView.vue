@@ -289,17 +289,23 @@ async function initAmapIfNeeded() {
     center = [Number(last.lng), Number(last.lat)];
     zoom = 15;
   }
-  mapInst = new TMapCtor.Map(el);
-  mapInst.centerAndZoom(new TMapCtor.LngLat(center[0], center[1]), zoom);
-  applyMapType();
-  redrawMapLayers();
-  requestAnimationFrame(() => {
-    try {
-      mapInst?.resize();
-    } catch {
-      /* ignore */
-    }
-  });
+  try {
+    mapInst = new TMapCtor.Map(el);
+    mapInst.centerAndZoom(new TMapCtor.LngLat(center[0], center[1]), zoom);
+    applyMapType();
+    redrawMapLayers();
+    requestAnimationFrame(() => {
+      try {
+        mapInst?.resize();
+      } catch {
+        /* ignore */
+      }
+    });
+  } catch {
+    TMapCtor = null;
+    mapInst = null;
+    mapError.value = "地图初始化失败：请刷新页面或检查天地图脚本是否被浏览器拦截。";
+  }
 }
 
 watch([points, events, playbackIndex], () => {
@@ -734,7 +740,11 @@ onMounted(async () => {
   } catch {
     /* ignore */
   }
-  await restoreActivePatrol();
+  try {
+    await restoreActivePatrol();
+  } catch {
+    showFailToast("本地数据库打开失败，请刷新页面或检查浏览器是否禁用存储");
+  }
   await nextTick();
   void initAmapIfNeeded();
 });
@@ -779,7 +789,7 @@ onUnmounted(() => {
       <van-cell-group inset class="block">
         <van-cell title="高德 IP 顶替 GPS" label="开启后本页轨迹采样与事件定位均用高德 IP，关闭则用 GPS" center>
           <template #value>
-            <van-switch v-model="useAmapIpForGps" size="20" />
+            <van-switch v-model="useAmapIpForGps" size="20px" />
           </template>
         </van-cell>
       </van-cell-group>
