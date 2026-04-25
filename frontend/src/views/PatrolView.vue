@@ -88,6 +88,52 @@ const orderedPoints = computed(() =>
   [...points.value].filter(isValidLngLat).sort((a, b) => (a.recorded_at || 0) - (b.recorded_at || 0))
 );
 
+function haversineMeters(a, b) {
+  const toRad = (d) => (d * Math.PI) / 180;
+  const lat1 = Number(a?.lat);
+  const lng1 = Number(a?.lng);
+  const lat2 = Number(b?.lat);
+  const lng2 = Number(b?.lng);
+  if (![lat1, lng1, lat2, lng2].every(Number.isFinite)) return 0;
+  const R = 6371000;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const x =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(x)));
+}
+
+const patrolStats = computed(() => {
+  const pts = orderedPoints.value;
+  if (!pts.length) {
+    return {
+      distanceMeters: 0,
+      durationMs: 0,
+      avgSpeedKmh: 0,
+    };
+  }
+  let distanceMeters = 0;
+  for (let i = 1; i < pts.length; i += 1) {
+    distanceMeters += haversineMeters(pts[i - 1], pts[i]);
+  }
+  const startTs = Number(pts[0]?.recorded_at || 0);
+  const endTs = Number(pts[pts.length - 1]?.recorded_at || 0);
+  const durationMs = Math.max(0, endTs - startTs);
+  const avgSpeedKmh = durationMs > 0 ? (distanceMeters / (durationMs / 1000)) * 3.6 : 0;
+  return { distanceMeters, durationMs, avgSpeedKmh };
+});
+
+const patrolStatsText = computed(() => {
+  const d = patrolStats.value.distanceMeters;
+  const h = Math.floor(patrolStats.value.durationMs / 3600000);
+  const m = Math.floor((patrolStats.value.durationMs % 3600000) / 60000);
+  const durationText = `${h}小时${m}分钟`;
+  const distanceText = d >= 1000 ? `${(d / 1000).toFixed(2)} km` : `${Math.round(d)} m`;
+  const speedText = patrolStats.value.avgSpeedKmh > 0 ? `${patrolStats.value.avgSpeedKmh.toFixed(1)} km/h` : "—";
+  return `里程 ${distanceText} · 时长 ${durationText} · 均速 ${speedText}`;
+});
+
 const amapDivRef = ref(null);
 const mapError = ref("");
 let TMapCtor = null;
@@ -321,6 +367,55 @@ watch([points, events, playbackIndex], () => {
 watch(mapType, () => {
   applyMapType();
 });
+
+function centerMapToCurrentPosition() {
+  if (!mapInst || !TMapCtor) return;
+  const selfPos = latestDeviceCoord.value;
+  if (isValidLngLat(selfPos)) {
+    mapInst.panTo(toTLngLat(selfPos));
+    showToast("已定位到当前坐标");
+    return;
+  }
+  const path = orderedPoints.value;
+  if (path.length) {
+    mapInst.panTo(toTLngLat(path[path.length - 1]));
+    showToast("已定位到最近轨迹点");
+    return;
+  }
+  showToast("暂无可定位坐标");
+}
+
+function fitMapToTrack() {
+  if (!mapInst || !TMapCtor) return;
+  const path = orderedPoints.value.map((p) => toTLngLat(p));
+  if (!path.length) {
+    showToast("暂无轨迹点");
+    return;
+  }
+  if (path.length === 1) {
+    mapInst.centerAndZoom(path[0], 16);
+    return;
+  }
+  if (typeof mapInst.setViewport === "function") {
+    mapInst.setViewport(path);
+  }
+}
+
+function focusEventOnMap(ev) {
+  if (!isValidLngLat(ev)) {
+    showToast("该事件缺少有效坐标");
+    return;
+  }
+  if (!mapInst) {
+    showToast("地图尚未加载完成");
+    return;
+  }
+  const pos = toTLngLat(ev);
+  mapInst.panTo(pos);
+  if (typeof mapInst.centerAndZoom === "function") {
+    mapInst.centerAndZoom(pos, 16);
+  }
+}
 
 function stopPlayback() {
   if (playbackTimer) {
@@ -794,6 +889,18 @@ onUnmounted(() => {
       <p class="map-disclaimer">
         地图数据与底图服务由天地图提供。页面仅用于巡护辅助展示与定位记录，不涉及任何行政区划主张。
       </p>
+      <div class="stats-chip">{{ patrolStatsText }}</div>
+      <div class="map-tool-row">
+        <van-button size="small" plain type="primary" @click="centerMapToCurrentPosition">回到我位置</van-button>
+        <van-button size="small" plain type="primary" @click="fitMapToTrack">适配轨迹范围</van-button>
+      </div>
+      <div class="map-legend">
+        <span class="legend-title">图例</span>
+        <span v-for="t in EVENT_TYPES" :key="`legend_${t.value}`" class="legend-item">
+          <span class="legend-dot" :style="{ backgroundColor: t.color }" />
+          {{ t.label }}
+        </span>
+      </div>
       <div v-if="mapError" class="map-fallback">
         <p>{{ mapError }}</p>
         <p v-if="mapError.includes('超时') || mapError.includes('脚本')" class="sub">
@@ -845,6 +952,8 @@ onUnmounted(() => {
         <van-cell
           :title="`${eventTypeLabel(ev.type)}`"
           :label="`${formatTime(ev.recorded_at)} · ${formatCoord(ev.lat)}, ${formatCoord(ev.lng)}${ev.note ? ' · ' + ev.note : ''}${ev.audio_dataurl ? ' · 含录音' : ''}`"
+          is-link
+          @click="focusEventOnMap(ev)"
         />
         <template #right>
           <van-button square type="danger" text="删除" class="swipe-del" @click="deleteEvent(ev)" />
@@ -959,6 +1068,49 @@ onUnmounted(() => {
 
 .trail-block {
   margin-top: 12px;
+}
+
+.stats-chip {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: #323233;
+  background: #f7f8fa;
+  border: 1px solid #ebedf0;
+  border-radius: 8px;
+}
+
+.map-tool-row {
+  display: flex;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+
+.map-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: 0 0 10px;
+}
+
+.legend-title {
+  font-size: 12px;
+  color: #969799;
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #646566;
+}
+
+.legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
 }
 
 .warn {
