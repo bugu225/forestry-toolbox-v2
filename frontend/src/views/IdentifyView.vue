@@ -7,6 +7,7 @@ import { describeGeoError, getCurrentPositionCompat } from "../utils/geolocation
 import { useAuthStore } from "../stores/auth";
 import { useNetworkStore } from "../stores/network";
 import { deleteRecord, getAllRecords, getRecord, putRecord, stores } from "../services/offlineDb";
+import { prepareImageForIdentify } from "../utils/identifyImagePrep";
 
 const authStore = useAuthStore();
 const networkStore = useNetworkStore();
@@ -440,8 +441,9 @@ async function scrollChatToBottom() {
 /**
  * 展示用户图片气泡 → 调用云端识图 → 展示助手气泡（失败时写原因）
  * @param meta 弹窗确认后的拍摄信息（时间/位置/类别），会置于助手回复开头
+ * @param {File|null} fileForPrep 若有原始 File，优先用其做 EXIF 方向校正（相册/系统相机）
  */
-async function addChatAndIdentify(dataUrl, source, imageTitle, meta) {
+async function addChatAndIdentify(dataUrl, source, imageTitle, meta, fileForPrep = null) {
   if (!dataUrl || !dataUrl.startsWith("data:image")) {
     showFailToast("无效的图片数据");
     return false;
@@ -515,11 +517,19 @@ async function addChatAndIdentify(dataUrl, source, imageTitle, meta) {
     return true;
   }
 
+  let imageBase64ForApi = stripDataUrl(dataUrl);
+  try {
+    const normalized = await prepareImageForIdentify(fileForPrep || dataUrl);
+    imageBase64ForApi = stripDataUrl(normalized);
+  } catch {
+    /* 预处理失败则仍传原图 */
+  }
+
   try {
     const job = {
       local_id: uid("identify_job"),
       image_name: safeImageFileName(imageTitle),
-      image_base64: stripDataUrl(dataUrl),
+      image_base64: imageBase64ForApi,
       scene_type: "general",
       result_json: [],
       created_at: new Date().toISOString(),
@@ -661,7 +671,7 @@ async function triggerCamera() {
     if (dataUrl && dataUrl.startsWith("data:image")) {
       const meta = await openShotMetaDialog(dataUrl);
       if (!meta) return;
-      await addChatAndIdentify(dataUrl, "camera", `拍摄_${Date.now()}.jpg`, meta);
+      await addChatAndIdentify(dataUrl, "camera", `拍摄_${Date.now()}.jpg`, meta, null);
       return;
     }
   } catch {
@@ -683,7 +693,7 @@ async function processAlbumFileList(files) {
       const dataUrl = await readAsDataURL(file);
       const meta = await openShotMetaDialog(dataUrl);
       if (!meta) continue;
-      const done = await addChatAndIdentify(dataUrl, "album", file.name || "相册.jpg", meta);
+      const done = await addChatAndIdentify(dataUrl, "album", file.name || "相册.jpg", meta, file);
       if (done) ok += 1;
     } catch {
       /* skip */
@@ -792,7 +802,7 @@ async function onCameraFile(ev) {
     const dataUrl = await readAsDataURL(file);
     const meta = await openShotMetaDialog(dataUrl);
     if (!meta) return;
-    await addChatAndIdentify(dataUrl, "camera", file.name || "拍摄.jpg", meta);
+    await addChatAndIdentify(dataUrl, "camera", file.name || "拍摄.jpg", meta, file);
   } catch {
     showFailToast("图片读取失败");
   }
@@ -846,6 +856,7 @@ onMounted(async () => {
               <p class="chat-empty-title">识图对话</p>
               <p class="chat-empty-desc">
                 使用下方「摄像头拍摄」或「从相册添加」。您的图片会以气泡显示在右侧，识别结果以气泡显示在左侧。图集可浏览已保存照片。
+                手机实拍会自动校正方向并适当缩小后再送云端，尽量贴近常见识图效果；若远景树太小，可走近拍摄树干、叶丛等清晰主体。
               </p>
             </div>
           </template>

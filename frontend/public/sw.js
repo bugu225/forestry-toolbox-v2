@@ -1,4 +1,4 @@
-const CACHE_NAME = "ftb2-shell-v2";
+const CACHE_NAME = "ftb2-shell-v3";
 
 /** 仅预缓存同源壳资源；失败项跳过，避免 install 整体失败导致无法安装 PWA */
 const APP_SHELL = ["/", "/index.html", "/manifest.webmanifest", "/favicon.svg", "/pwa-192.png", "/pwa-512.png"];

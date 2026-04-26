@@ -4,8 +4,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from flask import current_app
 
+from .identify_image_prep import normalize_identify_image_base64
+
 # 百度两路合并后，若最高置信度仍低于此值，视为「未识别为可信动植物」
-NON_BIOTA_CONFIDENCE_MAX = 0.15
+# 手机实拍置信度整体偏低，略放宽以免「有结果却被整图否决」
+NON_BIOTA_CONFIDENCE_MAX = 0.12
 
 ONLY_BIOTA_GUIDE_ZH = (
     "百度植物与动物识别通道**未将该图判定为足够可信的动植物类别**（或两路均无有效返回）。\n"
@@ -107,6 +110,7 @@ def identify_plant(image_name: str, image_base64: str | None):
     payload_image = image_base64
     if payload_image.startswith("data:"):
         payload_image = payload_image.split(",", 1)[1]
+    payload_image = normalize_identify_image_base64(payload_image)
 
     last_error: Exception | None = None
     for _ in range(retries + 1):
