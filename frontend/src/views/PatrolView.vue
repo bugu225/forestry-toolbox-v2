@@ -537,9 +537,12 @@ async function resolvePositionOnce() {
 
 async function recordSamplePoint() {
   if (!activeTask.value) return;
+  if (sampleBusy.value) return false;
+  const taskId = activeTask.value.local_id;
   sampleBusy.value = true;
   try {
     const pos = await resolvePositionOnce();
+    if (!activeTask.value || activeTask.value.local_id !== taskId) return false;
     const lat = Number(pos.coords.latitude);
     const lng = Number(pos.coords.longitude);
     const acc = Number(pos.coords.accuracy || 0);
@@ -563,7 +566,7 @@ async function recordSamplePoint() {
     }
     const rec = {
       local_id: uid("ppt"),
-      task_local_id: activeTask.value.local_id,
+      task_local_id: taskId,
       lat,
       lng,
       accuracy: acc,
@@ -571,6 +574,7 @@ async function recordSamplePoint() {
       source: "gps_track",
       recorded_at: Date.now(),
     };
+    if (!activeTask.value || activeTask.value.local_id !== taskId) return false;
     await putRecord(stores.patrolPoints, rec);
     points.value = [...points.value, rec].sort((a, b) => a.recorded_at - b.recorded_at);
     lastSampleAt.value = rec.recorded_at;
@@ -598,6 +602,8 @@ function startSamplingLoop(withImmediate) {
 async function sampleNow() {
   if (!activeTask.value) return;
   const ok = await recordSamplePoint();
+  if (!activeTask.value) return;
+  scheduleNextSample(nextSamplingIntervalMs());
   if (ok) showSuccessToast("已完成一次即时采样");
 }
 
@@ -1071,6 +1077,7 @@ onUnmounted(() => {
         <van-button block type="primary" :loading="eventSaveBusy" @click="saveEvent">保存</van-button>
       </div>
   </van-popup>
+
 </template>
 
 <style scoped>
