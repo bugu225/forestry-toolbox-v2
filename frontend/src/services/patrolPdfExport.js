@@ -43,6 +43,12 @@ function drawMiniMapDataUrl(points, events, eventTypeColor, width = 1000, height
       else ctx.lineTo(x, y);
     });
     ctx.stroke();
+  } else if (pts.length === 1) {
+    const [x, y] = toXY(pts[0]);
+    ctx.fillStyle = "#1989fa";
+    ctx.beginPath();
+    ctx.arc(x, y, 6, 0, Math.PI * 2);
+    ctx.fill();
   }
 
   for (const ev of (events || []).filter(isValidLngLat)) {

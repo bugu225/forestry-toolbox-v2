@@ -9,7 +9,7 @@ import PatrolTrackList from "../components/PatrolTrackList.vue";
 import { loadTianditu } from "../services/tiandituLoader";
 import { exportPatrolPdfReport } from "../services/patrolPdfExport";
 import { deletePatrolPointsForTask, deleteRecord, getAllRecords, putRecord, stores } from "../services/offlineDb";
-import { describeGeoError, getCurrentPositionCompat, getHighAccuracySnapshot } from "../utils/geolocation";
+import { describeGeoError, getCurrentPositionCompat, getHighAccuracySnapshot, getQuickPositionForEvent } from "../utils/geolocation";
 
 const networkStore = useNetworkStore();
 const { effectiveOnline } = storeToRefs(networkStore);
@@ -951,13 +951,14 @@ async function restoreActivePatrol() {
   }
 }
 
-/** 25 分钟内最近一次有效轨迹点，用于定位失败时仍能记事件 */
-function coordinatesFromLastPointOrNull() {
+/** 最近一次有效轨迹点；maxAgeMs 内可用，用于定位慢或失败时仍能记事件 */
+function coordinatesFromLastPointOrNull(maxAgeMs = 25 * 60 * 1000) {
   const sorted = [...points.value].sort((a, b) => (b.recorded_at || 0) - (a.recorded_at || 0));
   const last = sorted[0];
   if (!last) return null;
-  const age = Date.now() - (last.recorded_at || 0);
-  if (age > 25 * 60 * 1000) return null;
+  const recAt = Number(last.recorded_at || 0);
+  const age = recAt > 0 ? Date.now() - recAt : Number.POSITIVE_INFINITY;
+  if (age > maxAgeMs) return null;
   const lat = Number(last.lat);
   const lng = Number(last.lng);
   if (!isValidLngLat({ lat, lng })) return null;
@@ -973,19 +974,50 @@ function freshDeviceCoordForEventOrNull() {
   const w = latestDeviceCoord.value;
   if (!w || !isValidLngLat(w)) return null;
   const age = Date.now() - Number(w.captured_at || 0);
-  if (age > 15000) return null;
-  if (w.source !== "gps_watch" && w.source !== "gps_sample") return null;
+  if (age > 90000) return null;
+  const src = String(w.source || "");
+  const ok =
+    src === "gps_watch" ||
+    src === "gps_sample" ||
+    src === "gps" ||
+    src === "gps_live_event";
+  if (!ok) return null;
+  const outSource =
+    src === "gps_watch" ? "gps_watch" : src === "gps_sample" ? "gps_sample" : src === "gps_live_event" ? "gps_live_event" : "gps";
   return {
     lat: Number(w.lat),
     lng: Number(w.lng),
     accuracy: Number(w.accuracy || 0),
-    source: w.source === "gps_watch" ? "gps_watch" : "gps_sample",
+    source: outSource,
   };
 }
 
 async function resolveCoordsForEvent() {
   const fresh = freshDeviceCoordForEventOrNull();
   if (fresh) return fresh;
+
+  const trailTtl = activeTask.value ? 4 * 60 * 60 * 1000 : 25 * 60 * 1000;
+  const fromTrailEarly = coordinatesFromLastPointOrNull(trailTtl);
+  if (fromTrailEarly) return fromTrailEarly;
+
+  try {
+    const pos = await getQuickPositionForEvent(11000);
+    const lat = Number(pos.coords.latitude);
+    const lng = Number(pos.coords.longitude);
+    const accuracy = Number(pos.coords.accuracy || 0);
+    if (!isValidLngLat({ lat, lng })) throw new Error("bad_coord");
+    latestDeviceCoord.value = {
+      lat,
+      lng,
+      accuracy,
+      source: "gps_live_event",
+      captured_at: Date.now(),
+    };
+    return { lat, lng, accuracy, source: "gps_quick" };
+  } catch {
+    /* fall through */
+  }
+
   try {
     const pos = await getHighAccuracySnapshot();
     const lat = Number(pos.coords.latitude);
@@ -1003,8 +1035,9 @@ async function resolveCoordsForEvent() {
   } catch {
     /* fall through */
   }
-  const fromPoint = coordinatesFromLastPointOrNull();
-  if (fromPoint) return fromPoint;
+
+  const fromTrailLoose = coordinatesFromLastPointOrNull(366 * 24 * 60 * 60 * 1000);
+  if (fromTrailLoose) return fromTrailLoose;
   throw new Error("bad_coord");
 }
 
@@ -1146,7 +1179,10 @@ function openPdfConfig() {
 async function exportPatrolPdf() {
   exportPdfBusy.value = true;
   try {
-    const mapSnapshot = await captureMapSnapshotOrNull();
+    /** html2canvas 往往截不到天地图上的折线/Marker，有轨迹或事件时强制用画布缩略图 */
+    const useCanvasMap =
+      orderedPoints.value.length >= 1 || events.value.length > 0;
+    const mapSnapshot = useCanvasMap ? null : await captureMapSnapshotOrNull();
     const generateTimeText = pdfForm.value.generateTime
       ? String(pdfForm.value.generateTime).replace("T", " ")
       : formatTime(Date.now());

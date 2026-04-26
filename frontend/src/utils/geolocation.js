@@ -127,6 +127,22 @@ export async function getHighAccuracySnapshot() {
   throw lastErr || Object.assign(new Error("geo_failed"), { code: 0 });
 }
 
+/**
+ * 记录事件用：单次短超时定位，避免与巡护采样的长链路抢时间。
+ * 允许略陈旧坐标（maximumAge）以改善室内/弱信号下的首响。
+ */
+export async function getQuickPositionForEvent(timeoutMs = 10000) {
+  if (typeof navigator === "undefined" || !navigator.geolocation) {
+    throw Object.assign(new Error("no_geolocation"), { code: 0 });
+  }
+  if (typeof window !== "undefined" && window.isSecureContext === false) {
+    throw Object.assign(new Error("insecure_context"), { code: 0 });
+  }
+  await assertPermissionNotDenied();
+  const opts = { enableHighAccuracy: true, maximumAge: 12000, timeout: timeoutMs };
+  return getCurrentPositionOnce(opts);
+}
+
 export async function getCurrentPositionCompat() {
   if (typeof navigator === "undefined" || !navigator.geolocation) {
     throw Object.assign(new Error("no_geolocation"), { code: 0 });
