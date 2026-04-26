@@ -5,7 +5,7 @@ import "vant/lib/index.css";
 
 import App from "./App.vue";
 import router from "./router";
-import { useNetworkStore } from "./stores/network";
+import { useNetworkStore, bindDebouncedNavigatorListeners } from "./stores/network";
 
 const app = createApp(App);
 const pinia = createPinia();
@@ -13,10 +13,9 @@ app.use(pinia);
 app.use(router);
 app.use(Vant);
 
+let unbindNetworkListeners = () => {};
 if (typeof window !== "undefined") {
-  const networkStore = useNetworkStore();
-  window.addEventListener("online", () => networkStore.setNavigatorOnline(true));
-  window.addEventListener("offline", () => networkStore.setNavigatorOnline(false));
+  unbindNetworkListeners = bindDebouncedNavigatorListeners(() => useNetworkStore());
 }
 
 app.mount("#app");
@@ -24,7 +23,7 @@ app.mount("#app");
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
     navigator.serviceWorker
-      .register("/sw.js")
+      .register("/sw.js", { scope: "/", updateViaCache: "none" })
       .then((registration) => {
         const notifyUpdateReady = () => {
           window.dispatchEvent(new CustomEvent("pwa-update-ready", { detail: { registration } }));
@@ -44,8 +43,8 @@ if ("serviceWorker" in navigator) {
           });
         });
       })
-      .catch(() => {
-        // Keep silent; app still works without SW.
+      .catch((err) => {
+        console.warn("[PWA] service worker register failed", err);
       });
   });
 }

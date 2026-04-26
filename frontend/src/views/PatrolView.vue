@@ -152,8 +152,11 @@ let polylineInst = null;
 const eventMarkers = [];
 let playbackMarker = null;
 let currentPosMarker = null;
-/** watch 实时段：一条折线（避免上百个 Marker 卡顿） */
+/** watch 实时段：折线 + 稀疏点（上限控制，兼顾「画点」与流畅） */
 let livePolylineInst = null;
+const liveTrailDotMarkers = [];
+/** 实时轨迹上最多绘制的采样点标记数 */
+const LIVE_DOT_SHOW_MAX = 36;
 let playbackTimer = null;
 const latestDeviceCoord = ref(null);
 /** 仅由 watchPosition 写入，用于地图实时绿点 */
@@ -229,6 +232,13 @@ function clearMapOverlays() {
     }
     livePolylineInst = null;
   }
+  for (const m of liveTrailDotMarkers.splice(0)) {
+    try {
+      mapInst.removeOverLay(m);
+    } catch {
+      /* ignore */
+    }
+  }
   if (playbackMarker) {
     mapInst.removeOverLay(playbackMarker);
     playbackMarker = null;
@@ -291,7 +301,36 @@ function makeEventMarker(ev) {
   return mk;
 }
 
-/** 仅重绘实时 watch 折线 + 当前位置蓝点，不碰已入库折线与事件层 */
+function makeLiveTrailDotMarker(lat, lng) {
+  const lnglat = new TMapCtor.LngLat(Number(lng), Number(lat));
+  const tiny = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12"><circle cx="6" cy="6" r="4" fill="#69c0ff" stroke="#fff" stroke-width="1"/></svg>`;
+  const url = `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(tiny)}`;
+  let m = null;
+  try {
+    m = new TMapCtor.Marker(lnglat);
+  } catch {
+    try {
+      m = new TMapCtor.Marker({ lnglat });
+    } catch {
+      return null;
+    }
+  }
+  try {
+    if (TMapCtor.Icon && TMapCtor.Point && typeof m.setIcon === "function") {
+      const icon = new TMapCtor.Icon({
+        iconUrl: url,
+        iconSize: new TMapCtor.Point(12, 12),
+        iconAnchor: new TMapCtor.Point(6, 6),
+      });
+      m.setIcon(icon);
+    }
+  } catch {
+    /* ignore */
+  }
+  return m;
+}
+
+/** 重绘实时 watch：折线 + 稀疏点 + 当前位置蓝点 */
 function paintLiveOverlays() {
   if (!mapInst || !TMapCtor) return;
   if (livePolylineInst) {
@@ -301,6 +340,13 @@ function paintLiveOverlays() {
       /* ignore */
     }
     livePolylineInst = null;
+  }
+  for (const m of liveTrailDotMarkers.splice(0)) {
+    try {
+      mapInst.removeOverLay(m);
+    } catch {
+      /* ignore */
+    }
   }
   if (currentPosMarker) {
     try {
@@ -321,6 +367,25 @@ function paintLiveOverlays() {
       try {
         livePolylineInst = new TMapCtor.Polyline(path, { color: "#1890ff", weight: 4, opacity: 0.9 });
         mapInst.addOverLay(livePolylineInst);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  if (trail.length >= 1) {
+    const idxSet = new Set();
+    const step = Math.max(1, Math.ceil(trail.length / LIVE_DOT_SHOW_MAX));
+    for (let i = 0; i < trail.length; i += step) idxSet.add(i);
+    idxSet.add(trail.length - 1);
+    for (const i of idxSet) {
+      const p = trail[i];
+      if (!isValidLngLat(p)) continue;
+      const dot = makeLiveTrailDotMarker(p.lat, p.lng);
+      if (!dot) continue;
+      try {
+        dot.setTitle("实时轨迹点");
+        mapInst.addOverLay(dot);
+        liveTrailDotMarkers.push(dot);
       } catch {
         /* ignore */
       }
@@ -1128,7 +1193,43 @@ async function deleteEvent(ev) {
   showSuccessToast("已删除");
 }
 
+let unbindMapVisibility = () => {};
+
+/** 回到前台时校正地图尺寸；长时间后台则重启 watch，减轻定位「断感」 */
+function setupMapVisibilityRecovery() {
+  let lastHiddenAt = 0;
+  const refresh = () => {
+    void nextTick(() => {
+      try {
+        mapInst?.resize?.();
+      } catch {
+        /* ignore */
+      }
+      if (mapInst && TMapCtor) redrawMapLayers();
+      const gap = lastHiddenAt ? Date.now() - lastHiddenAt : 0;
+      if (gap > 45_000 && activeTask.value) startLivePositionWatch();
+    });
+  };
+  const onVis = () => {
+    if (document.visibilityState === "hidden") {
+      lastHiddenAt = Date.now();
+      return;
+    }
+    refresh();
+  };
+  const onPageShow = (e) => {
+    if (e.persisted) refresh();
+  };
+  document.addEventListener("visibilitychange", onVis);
+  window.addEventListener("pageshow", onPageShow);
+  return () => {
+    document.removeEventListener("visibilitychange", onVis);
+    window.removeEventListener("pageshow", onPageShow);
+  };
+}
+
 onMounted(async () => {
+  unbindMapVisibility = setupMapVisibilityRecovery();
   try {
     await restoreActivePatrol();
   } catch {
@@ -1139,6 +1240,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  unbindMapVisibility();
   clearSamplingTimer();
   stopPlayback();
   stopLivePositionWatch();
@@ -1163,7 +1265,7 @@ onUnmounted(() => {
 
       <div class="map-wrap">
         <p class="hint tight">
-          事件随时写入本机；轨迹在「结束巡护」时整条写入任务记录。巡护进行中轨迹仅存本页内存，刷新会丢失。
+          事件随时写入本机；轨迹在「结束巡护」时整条写入任务记录。巡护进行中轨迹仅存本页内存，刷新会丢失。网络短暂波动不会立刻切离线地图；定位在后台较久后会自动恢复 watch。
         </p>
         <div class="stats-chip">{{ patrolStatsText }}</div>
         <div v-if="mapError" class="map-fallback">
@@ -1204,6 +1306,7 @@ onUnmounted(() => {
           <span class="legend-title">图层</span>
           <span class="legend-item"><span class="legend-line solid" />已记录轨迹</span>
           <span class="legend-item"><span class="legend-line dash" />实时 watch</span>
+          <span class="legend-item"><span class="legend-dot cyan" />实时采样点</span>
           <span class="legend-item"><span class="legend-dot blue" />当前位置</span>
         </div>
         <div class="map-legend">
@@ -1481,6 +1584,10 @@ onUnmounted(() => {
 
 .legend-dot.blue {
   background: #1989fa;
+}
+
+.legend-dot.cyan {
+  background: #69c0ff;
 }
 
 .map-legend-lines {
