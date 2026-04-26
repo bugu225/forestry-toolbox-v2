@@ -28,7 +28,6 @@ const speechSupported = ref(false);
 const speaking = ref(false);
 let speechRecognizer = null;
 
-/** 与后端 FORESTRY_KNOWLEDGE_CATEGORIES 顺序一致，用于分组展示 */
 const KNOWLEDGE_CATEGORY_ORDER = [
   "森林防火",
   "林木病虫害",
@@ -51,14 +50,11 @@ const knowledgeImportBusy = ref(false);
 const knowledgePopupVisible = ref(false);
 const knowledgeDetailRow = ref(null);
 const knowledgeFileInput = ref(null);
-/** 资料导入区默认收起，减少占用；需要导入时再展开 */
 const knowledgeImportExpanded = ref(false);
 
-/** 当前聊天会话（本地 local_id）；新建对话时为 null */
 const activeChatSessionLocalId = ref(null);
 const chatScrollRef = ref(null);
 
-/** knowledge=本地知识库；qa=联网问答；离线时固定为知识库 */
 const activeModule = ref("knowledge");
 
 watch(online, (isOnline) => {
@@ -181,7 +177,6 @@ function withAskFailureHint(message) {
   return `${base}。请检查网络、DeepSeek Key 与余额后重试。`;
 }
 
-/** 区分超时与其它错误，避免 LLM 较慢时误提示「Key/余额」 */
 function formatQaAskFailure(error) {
   const serverMsg = error?.response?.data?.error?.message;
   if (serverMsg) return serverMsg;
@@ -210,7 +205,6 @@ function uid(prefix) {
   return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
 }
 
-/** 气泡排序：优先 created_at；旧数据从 local_id 内时间戳解析；同一时刻用户在前、助手在后 */
 function messageSortValue(m) {
   if (m?.created_at) {
     return new Date(m.created_at).getTime();
@@ -541,7 +535,6 @@ function speakPreviewAnswer() {
   window.speechSynthesis.speak(utterance);
 }
 
-/** 主对话：同一本地会话内多轮，云端 session_id 续写 */
 async function sendChatMessage() {
   const question = (form.question || "").trim();
   if (!question) {
@@ -630,9 +623,7 @@ async function loadCloudSessions() {
   try {
     const { data } = await apiClient.get("/qa/sessions", { timeout: API_READ_TIMEOUT_MS });
     cloudSessions.value = data.items || [];
-  } catch (_) {
-    // Keep quiet on cloud list loading.
-  }
+  } catch (_) {}
 }
 
 async function loadCloudMessages(sessionId) {
@@ -943,7 +934,6 @@ onMounted(async () => {
           </van-button>
         </div>
 
-        <!-- 仅覆盖 AI 功能区（不铺满整页） -->
         <div v-if="historyDrawerOpen" class="qa-history-layer" role="dialog" aria-modal="true" aria-label="历史对话">
           <div class="qa-history-backdrop" @click="historyDrawerOpen = false" />
           <aside class="qa-history-panel">
@@ -1039,7 +1029,6 @@ onMounted(async () => {
   flex-shrink: 0;
 }
 
-/* 知识库模式：中间区域占满剩余高度，避免底部大块留白 */
 .page > .knowledge-panel {
   flex: 1;
   min-height: 0;
@@ -1067,7 +1056,6 @@ onMounted(async () => {
   border-radius: 0 0 8px 8px;
 }
 
-/* 历史侧栏：仅占 AI 功能区内部，宽度约为功能区 2/3 */
 .qa-history-layer {
   position: absolute;
   inset: 0;

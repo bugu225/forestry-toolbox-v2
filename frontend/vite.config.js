@@ -2,7 +2,6 @@ import fs from 'node:fs'
 import { defineConfig, loadEnv } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
-// https://vite.dev/config/
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '..', '')
   const useHttps = ['1', 'true', 'True'].includes(env.VITE_USE_HTTPS || '')
@@ -18,7 +17,6 @@ export default defineConfig(({ mode }) => {
     server: {
       host: '0.0.0.0',
       port: 5173,
-      // 手机经 ngrok / cpolar / Cloudflare Tunnel 等 HTTPS 域名访问本机 dev 时，须放行 Host，否则页面打不开
       allowedHosts: true,
       https: useHttps
         ? hasCustomCert
@@ -28,7 +26,6 @@ export default defineConfig(({ mode }) => {
             }
           : true
         : false,
-      // 与根目录 .env.local 中 VITE_API_BASE=/api 配套：开发时把 /api 转发到 Flask，避免跨域与误打到 Vite 静态资源
       proxy: {
         '/api': {
           target: apiTarget,

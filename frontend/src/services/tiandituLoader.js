@@ -1,7 +1,3 @@
-/**
- * 动态加载天地图 JS API 4.0。
- * Key 来源（按优先级）：Vite 变量 → index.html meta → /api/public/client-config。
- */
 const POLL_MS = 60;
 const POLL_MAX = 240;
 
@@ -28,9 +24,7 @@ async function ensureRuntimeConfig() {
     if (!res.ok) return;
     const data = await res.json();
     runtimeKey = String(data.tianditu_js_key || "").trim();
-  } catch {
-    /* ignore */
-  }
+  } catch {}
 }
 
 function waitTiandituReady() {

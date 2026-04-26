@@ -1,4 +1,4 @@
-"""识图请求前：EXIF 方向校正、缩略、统一 RGB JPEG，减轻手机实拍与百度接口的分布差异。"""
+"""识图前：EXIF、缩放、JPEG。"""
 from __future__ import annotations
 
 import base64
@@ -11,9 +11,6 @@ JPEG_QUALITY = 90
 
 
 def normalize_identify_image_base64(b64: str) -> str:
-    """
-    输入可为纯 base64 或 data URL；失败时返回去掉 data 前缀后的原始 base64，避免整链失败。
-    """
     raw = (b64 or "").strip()
     if raw.startswith("data:"):
         try:

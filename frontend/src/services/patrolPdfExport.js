@@ -14,7 +14,6 @@ function drawMiniMapDataUrl(points, events, eventTypeColor, width = 1000, height
   ctx.fillRect(0, 0, width, height);
   const pts = (points || []).filter(isValidLngLat);
   const evPts = (events || []).filter(isValidLngLat);
-  /** 无轨迹点时仍按事件坐标取景，避免只有事件时缩略图为空 */
   const boundsPts = pts.length ? pts : evPts;
   if (!boundsPts.length) return canvas.toDataURL("image/jpeg", 0.9);
 

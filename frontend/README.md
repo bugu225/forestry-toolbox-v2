@@ -1,5 +1,7 @@
-# Vue 3 + Vite
+# 前端（Vue 3 + Vite）
 
-This template should help get you started developing with Vue 3 in Vite. The template uses Vue 3 `<script setup>` SFCs, check out the [script setup docs](https://v3.vuejs.org/api/sfc-script-setup.html#sfc-script-setup) to learn more.
+生产构建：`npm run build`，输出 `dist/`。
 
-Learn more about IDE Support for Vue in the [Vue Docs Scaling up Guide](https://vuejs.org/guide/scaling-up/tooling.html#ide-support).
+开发：`npm run dev`，默认通过 Vite 将 `/api` 代理到后端（见根目录 `.env.local` 中 `VITE_DEV_API_PROXY_TARGET`）。
+
+与根目录 `README.md` 中的环境变量、部署说明配合使用。

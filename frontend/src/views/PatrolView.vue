@@ -14,14 +14,10 @@ import { describeGeoError, getCurrentPositionCompat, getHighAccuracySnapshot, ge
 const networkStore = useNetworkStore();
 const { effectiveOnline } = storeToRefs(networkStore);
 
-/** 入库轨迹点间隔：偏短以跟紧真实路径（耗电由系统/浏览器侧承担） */
 const SAMPLE_INTERVAL_MS = 2 * 1000;
-/** watchPosition 实时轨迹点（内存），与已入库折线叠加显示 */
 const LIVE_TRAIL_MAX = 280;
-/** 仅用于质量分级展示；不再因精度差而丢弃轨迹点 */
 const ACCEPTABLE_ACCURACY_M = 100;
 const GOOD_ACCURACY_M = 50;
-/** 仅过滤明显飞点，避免误伤真实快速移动 */
 const JUMP_CHECK_WINDOW_MS = 90 * 1000;
 const JUMP_DISTANCE_M = 900;
 const JUMP_SPEED_MPS = 55;
@@ -85,7 +81,6 @@ const points = ref([]);
 const events = ref([]);
 const samplingTimer = ref(null);
 const gpsBusy = ref(false);
-/** 保存事件 / 一键异常（勿与开始巡护的 gpsBusy 混用） */
 const eventSaveBusy = ref(false);
 
 const showEventSheet = ref(false);
@@ -93,7 +88,6 @@ const eventType = ref("pest");
 const eventNote = ref("");
 const eventPhotoDataUrl = ref("");
 
-/** 有效坐标、按时间排序（与地图折线/回放滑块一致） */
 const orderedPoints = computed(() =>
   [...points.value].filter(isValidLngLat).sort((a, b) => (a.recorded_at || 0) - (b.recorded_at || 0))
 );
@@ -144,7 +138,7 @@ const patrolStatsText = computed(() => {
   return `里程 ${distanceText} · 时长 ${durationText} · 均速 ${speedText}`;
 });
 
-const amapDivRef = ref(null);
+const mapDivRef = ref(null);
 const mapError = ref("");
 let TMapCtor = null;
 let mapInst = null;
@@ -152,19 +146,14 @@ let polylineInst = null;
 const eventMarkers = [];
 let playbackMarker = null;
 let currentPosMarker = null;
-/** watch 实时段：折线 + 稀疏点（上限控制，兼顾「画点」与流畅） */
 let livePolylineInst = null;
 const liveTrailDotMarkers = [];
-/** 实时轨迹上最多绘制的采样点标记数 */
 const LIVE_DOT_SHOW_MAX = 36;
 let playbackTimer = null;
 const latestDeviceCoord = ref(null);
-/** 仅由 watchPosition 写入，用于地图实时绿点 */
 const liveTrailCoords = ref([]);
 let liveWatchId = null;
-/** 避免每次加点都 setViewport 把用户缩放打乱；新巡护会复位 */
 let mapAutoViewportDone = false;
-/** watch 回调合并到每帧最多重绘一次实时层 */
 let liveOverlayRaf = 0;
 
 const playbackIndex = ref(0);
@@ -220,24 +209,18 @@ function clearMapOverlays() {
   for (const m of eventMarkers.splice(0)) {
     try {
       mapInst.removeOverLay(m);
-    } catch {
-      /* ignore */
-    }
+    } catch {}
   }
   if (livePolylineInst) {
     try {
       mapInst.removeOverLay(livePolylineInst);
-    } catch {
-      /* ignore */
-    }
+    } catch {}
     livePolylineInst = null;
   }
   for (const m of liveTrailDotMarkers.splice(0)) {
     try {
       mapInst.removeOverLay(m);
-    } catch {
-      /* ignore */
-    }
+    } catch {}
   }
   if (playbackMarker) {
     mapInst.removeOverLay(playbackMarker);
@@ -256,9 +239,7 @@ function destroyMap() {
   if (mapInst) {
     try {
       mapInst.destroy();
-    } catch {
-      /* ignore */
-    }
+    } catch {}
     mapInst = null;
   }
   TMapCtor = null;
@@ -295,9 +276,7 @@ function makeEventMarker(ev) {
       });
       mk.setIcon(icon);
     }
-  } catch {
-    /* 保留默认图钉 */
-  }
+  } catch {}
   return mk;
 }
 
@@ -324,36 +303,27 @@ function makeLiveTrailDotMarker(lat, lng) {
       });
       m.setIcon(icon);
     }
-  } catch {
-    /* ignore */
-  }
+  } catch {}
   return m;
 }
 
-/** 重绘实时 watch：折线 + 稀疏点 + 当前位置蓝点 */
 function paintLiveOverlays() {
   if (!mapInst || !TMapCtor) return;
   if (livePolylineInst) {
     try {
       mapInst.removeOverLay(livePolylineInst);
-    } catch {
-      /* ignore */
-    }
+    } catch {}
     livePolylineInst = null;
   }
   for (const m of liveTrailDotMarkers.splice(0)) {
     try {
       mapInst.removeOverLay(m);
-    } catch {
-      /* ignore */
-    }
+    } catch {}
   }
   if (currentPosMarker) {
     try {
       mapInst.removeOverLay(currentPosMarker);
-    } catch {
-      /* ignore */
-    }
+    } catch {}
     currentPosMarker = null;
   }
   const trail = liveTrailCoords.value.filter(isValidLngLat);
@@ -367,9 +337,7 @@ function paintLiveOverlays() {
       try {
         livePolylineInst = new TMapCtor.Polyline(path, { color: "#1890ff", weight: 4, opacity: 0.9 });
         mapInst.addOverLay(livePolylineInst);
-      } catch {
-        /* ignore */
-      }
+      } catch {}
     }
   }
   if (trail.length >= 1) {
@@ -386,9 +354,7 @@ function paintLiveOverlays() {
         dot.setTitle("实时轨迹点");
         mapInst.addOverLay(dot);
         liveTrailDotMarkers.push(dot);
-      } catch {
-        /* ignore */
-      }
+      } catch {}
     }
   }
   const selfPos = latestDeviceCoord.value;
@@ -429,9 +395,7 @@ function stopLivePositionWatch() {
   if (liveWatchId == null) return;
   try {
     navigator.geolocation.clearWatch(liveWatchId);
-  } catch {
-    /* ignore */
-  }
+  } catch {}
   liveWatchId = null;
 }
 
@@ -457,9 +421,7 @@ function startLivePositionWatch() {
       liveTrailCoords.value = arr.length > LIVE_TRAIL_MAX ? arr.slice(-LIVE_TRAIL_MAX) : arr;
       schedulePaintLiveOverlays();
     },
-    () => {
-      /* 定时 getHighAccuracySnapshot 仍会入库兜底 */
-    },
+    () => {},
     opts
   );
 }
@@ -486,9 +448,7 @@ function makeCurrentPosMarker(row, opts = {}) {
       });
       mk.setIcon(icon);
     }
-  } catch {
-    /* 默认图钉 */
-  }
+  } catch {}
   return mk;
 }
 
@@ -522,9 +482,7 @@ function redrawMapLayers() {
       mk.setTitle(`${eventTypeLabel(ev.type)} ${ev.note || ""}`.trim());
       mapInst.addOverLay(mk);
       eventMarkers.push(mk);
-    } catch {
-      /* ignore */
-    }
+    } catch {}
   }
 
   const idx = playbackIndex.value;
@@ -561,14 +519,14 @@ async function initAmapIfNeeded() {
         "未配置天地图 Key：请在服务器 backend/.env.local 中设置 TIANDITU_JS_KEY，或在 index.html 的 <head> 内增加 meta forestry-tianditu-key 后刷新页面。";
     }
     else if (code === "tianditu_runtime_config_404") {
-      mapError.value = "后端未提供 /api/public/client-config（疑似服务器未更新到最新代码），请先在服务器 git pull 并重启后端。";
+      mapError.value = "无法加载地图配置（/api/public/client-config）。请确认后端已部署并返回天地图 Key。";
     }
     else if (code === "tianditu_load_timeout") mapError.value = "天地图脚本加载超时，请检查网络或域名白名单配置";
     else mapError.value = "天地图加载失败";
     return;
   }
   await nextTick();
-  const el = amapDivRef.value;
+  const el = mapDivRef.value;
   if (!el) return;
   const pathArr = orderedPoints.value;
   let center = [116.397428, 39.90923];
@@ -586,16 +544,12 @@ async function initAmapIfNeeded() {
       if (hybrid && typeof mapInst.setMapType === "function") {
         mapInst.setMapType(hybrid);
       }
-    } catch {
-      /* ignore */
-    }
+    } catch {}
     redrawMapLayers();
     requestAnimationFrame(() => {
       try {
         mapInst?.resize();
-      } catch {
-        /* ignore */
-      }
+      } catch {}
     });
   } catch {
     TMapCtor = null;
@@ -676,7 +630,6 @@ function focusEventOnMap(ev) {
   showEventDetailPopup.value = true;
 }
 
-/** 详情浮窗内「地图定位」：关浮窗后仅移动地图，避免再次弹出详情 */
 function refocusSelectedEventOnMap() {
   const ev = selectedEventDetail.value;
   if (!ev || !isValidLngLat(ev)) return;
@@ -905,7 +858,7 @@ async function startPatrol() {
   activeTask.value = task;
   liveTrailCoords.value = [];
   startLivePositionWatch();
-  showSuccessToast("已开始巡护：定时采样在内存中累计，结束本次巡护时一次性写入整条轨迹；watch 持续对齐地图");
+  showSuccessToast("已开始巡护");
   startSamplingLoop(true);
 }
 
@@ -947,11 +900,10 @@ async function restoreActivePatrol() {
     lastSampleAt.value = Number(latest?.recorded_at || 0);
     startLivePositionWatch();
     startSamplingLoop(false);
-    showToast("已恢复进行中的巡护（未结束前轨迹仅在本页内存，刷新会丢失）");
+    showToast("已恢复进行中的巡护");
   }
 }
 
-/** 最近一次有效轨迹点；maxAgeMs 内可用，用于定位慢或失败时仍能记事件 */
 function coordinatesFromLastPointOrNull(maxAgeMs = 25 * 60 * 1000) {
   const sorted = [...points.value].sort((a, b) => (b.recorded_at || 0) - (a.recorded_at || 0));
   const last = sorted[0];
@@ -1014,9 +966,7 @@ async function resolveCoordsForEvent() {
       captured_at: Date.now(),
     };
     return { lat, lng, accuracy, source: "gps_quick" };
-  } catch {
-    /* fall through */
-  }
+  } catch {}
 
   try {
     const pos = await getHighAccuracySnapshot();
@@ -1032,9 +982,7 @@ async function resolveCoordsForEvent() {
       captured_at: Date.now(),
     };
     return { lat, lng, accuracy, source: "gps_live" };
-  } catch {
-    /* fall through */
-  }
+  } catch {}
 
   const fromTrailLoose = coordinatesFromLastPointOrNull(366 * 24 * 60 * 60 * 1000);
   if (fromTrailLoose) return fromTrailLoose;
@@ -1136,7 +1084,7 @@ async function saveEvent() {
 }
 
 async function captureMapSnapshotOrNull() {
-  const el = amapDivRef.value;
+  const el = mapDivRef.value;
   if (!el) return null;
   try {
     const { default: html2canvas } = await import("html2canvas");
@@ -1179,7 +1127,6 @@ function openPdfConfig() {
 async function exportPatrolPdf() {
   exportPdfBusy.value = true;
   try {
-    /** html2canvas 往往截不到天地图上的折线/Marker，有轨迹或事件时强制用画布缩略图 */
     const useCanvasMap =
       orderedPoints.value.length >= 1 || events.value.length > 0;
     const mapSnapshot = useCanvasMap ? null : await captureMapSnapshotOrNull();
@@ -1231,16 +1178,13 @@ async function deleteEvent(ev) {
 
 let unbindMapVisibility = () => {};
 
-/** 回到前台时校正地图尺寸；长时间后台则重启 watch，减轻定位「断感」 */
 function setupMapVisibilityRecovery() {
   let lastHiddenAt = 0;
   const refresh = () => {
     void nextTick(() => {
       try {
         mapInst?.resize?.();
-      } catch {
-        /* ignore */
-      }
+      } catch {}
       if (mapInst && TMapCtor) redrawMapLayers();
       const gap = lastHiddenAt ? Date.now() - lastHiddenAt : 0;
       if (gap > 45_000 && activeTask.value) startLivePositionWatch();
@@ -1318,7 +1262,7 @@ onUnmounted(() => {
           </p>
         </div>
         <div class="map-stage">
-          <div ref="amapDivRef" class="amap-box" />
+          <div ref="mapDivRef" class="patrol-map" />
         </div>
         <div class="recenter-row">
           <van-button class="recenter-btn" size="small" round type="primary" @click="centerMapToCurrentPosition">定位到我</van-button>
@@ -1708,7 +1652,7 @@ onUnmounted(() => {
   margin-bottom: 16px;
 }
 
-.amap-box {
+.patrol-map {
   width: 100%;
   height: 300px;
   border-radius: 12px;

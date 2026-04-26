@@ -1,13 +1,9 @@
 import { computed, ref } from "vue";
 import { defineStore } from "pinia";
 
-/** 闪断网防抖（ms）：避免瞬时 offline 导致地图/界面反复「掉线」 */
 const OFFLINE_DEBOUNCE_MS = 2600;
 let offlineDebounceTimer = null;
 
-/**
- * 在 `app.use(pinia)` 之后调用一次。在线立即同步；离线延迟再标为断网（仍不影响 geolocation 内对 `navigator.onLine` 的直接读取）。
- */
 export function bindDebouncedNavigatorListeners(getStore) {
   if (typeof window === "undefined") return () => {};
   const onOnline = () => {
@@ -36,9 +32,6 @@ export function bindDebouncedNavigatorListeners(getStore) {
   };
 }
 
-/**
- * 手机网络在线状态 + 可选「模拟断网」（仅本应用内测试离线，不改系统网络）。
- */
 export const useNetworkStore = defineStore("network", () => {
   const navigatorOnline = ref(typeof navigator !== "undefined" ? navigator.onLine : true);
   const simulateOffline = ref(false);

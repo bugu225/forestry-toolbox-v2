@@ -1,8 +1,3 @@
-/**
- * 识图前统一预处理：纠正 EXIF 方向、限制长边、转 JPEG，减轻手机实拍与接口训练数据分布差异。
- * @param {File|Blob|string} input File/Blob 或 data URL
- * @returns {Promise<string>} data:image/jpeg;base64,...
- */
 const MAX_LONG_SIDE = 1680;
 const JPEG_QUALITY = 0.9;
 
@@ -21,18 +16,14 @@ async function decodeToDrawable(input) {
     if (typeof createImageBitmap === "function") {
       try {
         return await createImageBitmap(blob, { imageOrientation: "from-image" });
-      } catch {
-        /* 继续走 Image */
-      }
+      } catch {}
     }
     return loadImageFromUrl(input);
   }
   if (input instanceof Blob && typeof createImageBitmap === "function") {
     try {
       return await createImageBitmap(input, { imageOrientation: "from-image" });
-    } catch {
-      /* 继续走 objectURL + Image */
-    }
+    } catch {}
   }
   if (input instanceof Blob) {
     const url = URL.createObjectURL(input);
@@ -71,17 +62,11 @@ function drawScaledToJpegDataUrl(drawable) {
   if (typeof drawable.close === "function") {
     try {
       drawable.close();
-    } catch {
-      /* ignore */
-    }
+    } catch {}
   }
   return canvas.toDataURL("image/jpeg", JPEG_QUALITY);
 }
 
-/**
- * @param {File|Blob|string} input
- * @returns {Promise<string>}
- */
 export async function prepareImageForIdentify(input) {
   const drawable = await decodeToDrawable(input);
   return drawScaledToJpegDataUrl(drawable);

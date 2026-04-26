@@ -11,7 +11,7 @@
 | **`SECRET_KEY` / `JWT_SECRET_KEY`** | 生产环境务必改为**随机长字符串**，勿使用仓库默认值。 |
 | **`FLASK_DEBUG`** | 生产设为 **`0`**（或不设置，见 `run.py` 默认）。 |
 | **`PLANT_API_*` / `LLM_API_*`** | 识图与问答依赖外网 API，香港服务器一般可直接访问；若走企业代理再单独配置。 |
-| **`VITE_AMAP_*`** | 前端构建时注入；在高德控制台将 **Web 端安全密钥** 的域名白名单加入你的 **HTTPS 站点域名**。 |
+| **`TIANDITU_JS_KEY`** | 天地图 JS Key；在天地图控制台配置域名白名单，并由 **`/api/public/client-config`** 提供给前端。 |
 
 前端构建仍使用仓库根目录 **`.env.production`** 中的 **`VITE_API_BASE=/api`** 即可（与 Nginx 同源反代一致）。**不要**在参与 `npm run build` 的 env 里写 `http://localhost:5000/...`。
 

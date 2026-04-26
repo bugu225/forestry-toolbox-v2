@@ -1,8 +1,4 @@
-/**
- * 生成占位 PWA 图标（仅当 public 下尚无「自定义」大图时）。
- * 自定义图标：直接替换 frontend/public/pwa-192.png 与 pwa-512.png（建议 192×192、512×512 PNG）。
- * 强制重新生成占位图：node scripts/gen-pwa-icons.mjs --force
- */
+// Placeholder PWA icons unless public/pwa-*.png already exist; --force to overwrite.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,7 +19,6 @@ async function shouldSkip() {
   try {
     const s192 = await fs.promises.stat(p192);
     const s512 = await fs.promises.stat(p512);
-    /** 脚本生成的纯色图标约几百～2KB；你放入的摄影/Logo 通常远大于此 */
     if (s192.size > 4000 && s512.size > 8000) {
       console.log("Skip PWA icon generation: custom pwa-192.png / pwa-512.png already present. Use --force to overwrite.");
       return true;

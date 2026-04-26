@@ -11,7 +11,6 @@ const STORE_PATROL_TASKS = "patrol_tasks";
 const STORE_PATROL_POINTS = "patrol_points";
 const STORE_PATROL_EVENTS = "patrol_events";
 
-/** 旧版已移除的 object store（升级时删除） */
 const LEGACY_STORES_TO_DROP = ["identify_jobs"];
 
 function openDb() {
@@ -123,7 +122,6 @@ export async function deleteRecord(storeName, key) {
   await txPromise(tx);
 }
 
-/** 删除某巡护任务下旧版「逐点」轨迹（新版轨迹在 patrol_tasks.track_points） */
 export async function deletePatrolPointsForTask(taskLocalId) {
   if (!taskLocalId) return;
   const db = await openDb();

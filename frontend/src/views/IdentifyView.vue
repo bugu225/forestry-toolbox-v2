@@ -13,25 +13,18 @@ const authStore = useAuthStore();
 const networkStore = useNetworkStore();
 const { effectiveOnline: online } = storeToRefs(networkStore);
 
-/** 中部对话：user 含 image；assistant 含 text / pending */
 const chatMessages = ref([]);
 const chatScrollRef = ref(null);
-/** 图集全屏覆盖功能区（不含顶栏与底栏） */
 const showGallery = ref(false);
-/** 图集内大图预览（黑底、固定比例画幅、元数据、上/下一张） */
 const showGalleryPreview = ref(false);
-/** 图集大图预览内：底部「识图信息」半屏页 */
 const showGalleryIdentifySheet = ref(false);
 const galleryPreviewIndex = ref(0);
 const galleryRaw = ref([]);
 const cameraInput = ref(null);
 const albumInput = ref(null);
-/** 直连摄像头（getUserMedia），失败则回退到 file input */
 const cameraBusy = ref(false);
 
-/** 拍摄前元数据弹窗（不依赖网络）；确定后才进入识图流程 */
 const showShotMetaPopup = ref(false);
-/** 拍摄信息弹窗顶部预览（先拍照/选图后再填信息） */
 const shotMetaPreviewUrl = ref("");
 const metaLocationLoading = ref(false);
 const metaForm = reactive({
@@ -84,7 +77,6 @@ function formatGalleryItemMeta(item) {
   return { time, location, category };
 }
 
-/** 顶栏/图集：经纬度统一显示为一位小数；兼容仅存 locationLine 的旧数据 */
 function formatLocationLineForDisplay(sm) {
   if (!sm || typeof sm !== "object") return "无记录（旧图或未填写）";
   const lat = sm.lat;
@@ -105,7 +97,6 @@ function formatLocationLineForDisplay(sm) {
   return line;
 }
 
-/** 与识图助手气泡正文一致：动植物+简介 / 非动植物提示 / 离线或未记录等 */
 function buildGalleryIdentifyPreviewText(item) {
   if (!item) return "";
   const gi = item.gallery_identify;
@@ -151,9 +142,7 @@ async function persistGalleryIdentify(localId, galleryIdentify) {
     const existing = await getRecord(stores.identifyGallery, localId);
     if (!existing) return;
     await putRecord(stores.identifyGallery, { ...existing, gallery_identify: galleryIdentify });
-  } catch {
-    /* 忽略写入失败，对话区仍已展示 */
-  }
+  } catch {}
 }
 
 function uid(prefix) {
@@ -171,7 +160,6 @@ function riskLabel(level) {
   return map[level] || level || "低";
 }
 
-/** 避免把安卓系统给的纯数字文件名当作「物种名」传给后端 mock */
 function safeImageFileName(hint) {
   const h = (hint || "").trim();
   const stem = h.includes(".") ? h.slice(0, h.lastIndexOf(".")) : h;
@@ -185,7 +173,6 @@ function safeImageFileName(hint) {
   return `识图_${Date.now()}.jpg`;
 }
 
-/** 旧版：完整候选列表（缓存命中、离线预计算等仍走此逻辑） */
 function formatIdentifyReplyLegacy(synced) {
   const notice = (synced?.user_notice_zh || "").trim();
   const top = synced?.top_k || [];
@@ -232,7 +219,7 @@ function formatIdentifyReply(synced) {
     if (intro) {
       return `${head}\n\n${intro}`;
     }
-    return `${head}\n\n（暂无 AI 简介：请配置 LLM_API_KEY 或稍后重试）`;
+    return `${head}\n\n（暂无物种简介，请配置 LLM 或稍后重试）`;
   }
   return formatIdentifyReplyLegacy(synced);
 }
@@ -296,7 +283,6 @@ function resetMetaForm() {
   metaForm.category = "plant";
 }
 
-/** @returns {Promise<object|null>} meta 或取消时为 null @param previewDataUrl 已拍/已选图片的 data URL，用于弹窗顶部预览 */
 function openShotMetaDialog(previewDataUrl = "") {
   resetMetaForm();
   shotMetaPreviewUrl.value =
@@ -393,7 +379,6 @@ function fillCurrentLocation() {
     });
 }
 
-/** 不把 axios 英文原句直接给用户看 */
 function formatIdentifyApiError(err) {
   const serverMsg = err?.response?.data?.error?.message;
   if (serverMsg && typeof serverMsg === "string") return serverMsg;
@@ -438,11 +423,6 @@ async function scrollChatToBottom() {
   }
 }
 
-/**
- * 展示用户图片气泡 → 调用云端识图 → 展示助手气泡（失败时写原因）
- * @param meta 弹窗确认后的拍摄信息（时间/位置/类别），会置于助手回复开头
- * @param {File|null} fileForPrep 若有原始 File，优先用其做 EXIF 方向校正（相册/系统相机）
- */
 async function addChatAndIdentify(dataUrl, source, imageTitle, meta, fileForPrep = null) {
   if (!dataUrl || !dataUrl.startsWith("data:image")) {
     showFailToast("无效的图片数据");
@@ -521,9 +501,7 @@ async function addChatAndIdentify(dataUrl, source, imageTitle, meta, fileForPrep
   try {
     const normalized = await prepareImageForIdentify(fileForPrep || dataUrl);
     imageBase64ForApi = stripDataUrl(normalized);
-  } catch {
-    /* 预处理失败则仍传原图 */
-  }
+  } catch {}
 
   try {
     const job = {
@@ -580,7 +558,6 @@ function readAsDataURL(file) {
     });
 }
 
-/** @returns {Promise<string|null>} 成功返回 local_id，失败返回 null */
 async function savePhotoToGallery(dataUrl, source, options = {}) {
   const { silent = false, skipRefresh = false, shotMeta = null } = options;
   if (!dataUrl || !dataUrl.startsWith("data:image")) {
@@ -658,7 +635,6 @@ async function captureViaGetUserMedia() {
 async function triggerCamera() {
   if (cameraBusy.value) return;
   const ua = typeof navigator !== "undefined" ? navigator.userAgent || "" : "";
-  /** 手机端优先系统相机（file + capture），先完成拍照再回到页面填写拍摄信息 */
   const preferNativeCamera = /iPhone|iPad|iPod|Android|HarmonyOS|webOS|BlackBerry|Mobile/i.test(ua);
   if (preferNativeCamera) {
     cameraInput.value?.click();
@@ -674,9 +650,7 @@ async function triggerCamera() {
       await addChatAndIdentify(dataUrl, "camera", `拍摄_${Date.now()}.jpg`, meta, null);
       return;
     }
-  } catch {
-    /* 非安全上下文、用户拒绝、或不支持时走 file */
-  } finally {
+  } catch {} finally {
     cameraBusy.value = false;
   }
   cameraInput.value?.click();
@@ -695,9 +669,7 @@ async function processAlbumFileList(files) {
       if (!meta) continue;
       const done = await addChatAndIdentify(dataUrl, "album", file.name || "相册.jpg", meta, file);
       if (done) ok += 1;
-    } catch {
-      /* skip */
-    }
+    } catch {}
   }
   await refreshGallery();
   if (!eligible && files.length) {
@@ -1336,7 +1308,6 @@ onMounted(async () => {
   justify-content: space-between;
   gap: 12px;
   padding: 12px 16px;
-  /* 第三方浏览器底栏会盖住最后一行，额外垫高避免按钮贴底或被挡 */
   padding-bottom: calc(max(12px, env(safe-area-inset-bottom, 0px)) + 52px);
   background: #fff;
   border-top: 1px solid #ebedf0;
@@ -1489,7 +1460,6 @@ onMounted(async () => {
   flex: 1;
 }
 
-/* 图集大图预览：顶栏拍摄信息、中部原图（contain）、底部识图气泡（与对话区助手样式一致） */
 .gallery-viewer-root {
   position: fixed;
   inset: 0;
@@ -1548,7 +1518,6 @@ onMounted(async () => {
   margin-bottom: 0;
 }
 
-/* 单行 grid：避免 .gv-stage 内仅绝对定位导致 flex 子项高度为 0；底栏按钮悬浮不占行 */
 .gv-main {
   flex: 1;
   min-height: 0;
@@ -1611,7 +1580,6 @@ onMounted(async () => {
   cursor: not-allowed;
 }
 
-/* 识图信息：遮罩 + 底栏页，盖住左右箭头与中间按钮；点上方半透明区关闭 */
 .gv-identify-mask {
   position: fixed;
   inset: 0;
@@ -1647,7 +1615,6 @@ onMounted(async () => {
   text-align: center;
 }
 
-/* 与识图页 .bubble--assistant 一致；在底栏页内可滚动 */
 .gv-identify-bubble {
   margin: 0 12px max(12px, env(safe-area-inset-bottom));
   padding: 10px 14px;

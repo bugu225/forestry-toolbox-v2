@@ -1,6 +1,5 @@
 const CACHE_NAME = "ftb2-shell-v4";
 
-/** 仅预缓存同源壳资源；失败项跳过，避免 install 整体失败导致无法安装 PWA */
 const APP_SHELL = ["/", "/index.html", "/manifest.webmanifest", "/favicon.svg", "/pwa-192.png", "/pwa-512.png"];
 
 self.addEventListener("install", (event) => {
@@ -9,9 +8,7 @@ self.addEventListener("install", (event) => {
       for (const url of APP_SHELL) {
         try {
           await cache.add(new Request(url, { cache: "reload" }));
-        } catch {
-          /* 单项失败不影响安装 */
-        }
+        } catch {}
       }
       await self.skipWaiting();
     })

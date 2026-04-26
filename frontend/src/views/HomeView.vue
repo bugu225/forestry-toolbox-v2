@@ -14,7 +14,6 @@ const networkStore = useNetworkStore();
 const { simulateOffline, effectiveOnline } = storeToRefs(networkStore);
 const router = useRouter();
 
-/** 默认收起「其他」区块 */
 const moreActive = ref([]);
 
 const username = computed(() => authStore.user?.username || "用户");
@@ -26,21 +25,17 @@ const networkHint = computed(() => {
   return effectiveOnline.value ? "当前网络：在线" : "当前网络：离线";
 });
 
-/** 是否已以「应用 / 主屏幕」方式打开（含 iOS 主屏幕图标启动） */
 const isStandaloneDisplay = computed(() => {
   if (typeof window === "undefined") return false;
   try {
     if (window.matchMedia("(display-mode: standalone)").matches) return true;
     if (window.matchMedia("(display-mode: fullscreen)").matches) return true;
-  } catch {
-    /* ignore */
-  }
+  } catch {}
   if (typeof navigator !== "undefined" && navigator.standalone === true) return true;
   return false;
 });
 
 const pwaTipDismissed = ref(false);
-/** Chromium：可弹出系统「安装」对话框 */
 const canNativeInstall = ref(false);
 let deferredInstallPrompt = null;
 let beforeInstallHandler = null;
@@ -54,13 +49,11 @@ const isIOS =
     Number(navigator.maxTouchPoints) > 1);
 const isAndroid = /Android/i.test(ua);
 
-/** 百度系内置浏览器通常不触发 beforeinstallprompt，需走菜单手动添加 */
 const isBaiduBrowser = computed(() => {
   const u = typeof navigator === "undefined" ? "" : navigator.userAgent || "";
   return /baidubrowser|baiduboxapp|bdbrowser/i.test(u);
 });
 
-/** 仅在手机端展示「添加到主屏幕」提示 */
 const isPhoneBrowsing = computed(() => {
   if (typeof navigator === "undefined") return false;
   const u = navigator.userAgent || "";
@@ -69,7 +62,6 @@ const isPhoneBrowsing = computed(() => {
   return false;
 });
 
-/** 模板中不宜直接写 window，用计算属性避免构建/SSR 告警 */
 const showInsecureContextHint = computed(() => {
   if (typeof window === "undefined") return false;
   if (window.isSecureContext) return false;
@@ -132,9 +124,7 @@ function dismissPwaTip() {
   pwaTipDismissed.value = true;
   try {
     localStorage.setItem(PWA_TIP_DISMISS_KEY, "1");
-  } catch {
-    /* ignore */
-  }
+  } catch {}
 }
 
 async function onNativeInstallClick() {
@@ -209,7 +199,6 @@ async function checkApiReachable(label, action) {
   } catch (error) {
     const code = Number(error?.response?.status || error?.status || 0);
     const msg = code ? `HTTP ${code}` : (error?.message || "请求失败");
-    // 401/403/404 说明链路可达，仅业务不可用或权限不足
     if ([400, 401, 403, 404, 405].includes(code)) {
       return normalizeCheck(true, `${label}：链路可达（${msg}）`);
     }
@@ -446,7 +435,7 @@ onUnmounted(() => {
       <div class="entry-cards" role="navigation" aria-label="功能入口">
         <button type="button" class="entry-card entry-card--qa" @click="goQa">
           <span class="entry-card-title">林业知识问答</span>
-          <span class="entry-card-desc">AI 问答与知识检索</span>
+          <span class="entry-card-desc">联网问答与知识检索</span>
         </button>
         <button type="button" class="entry-card entry-card--id" @click="goIdentify">
           <span class="entry-card-title">林业识图</span>

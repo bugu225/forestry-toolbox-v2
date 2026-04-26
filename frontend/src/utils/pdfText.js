@@ -1,7 +1,3 @@
-/**
- * 在浏览器内从 PDF 提取纯文本（pdf.js）。
- * 扫描件、图片型 PDF 若无文字层则结果为空或极少。
- */
 export async function extractTextFromPdfFile(file) {
   const pdfjsLib = await import("pdfjs-dist");
   const workerMod = await import("pdfjs-dist/build/pdf.worker.min.mjs?url");
