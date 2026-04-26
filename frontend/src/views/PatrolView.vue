@@ -14,11 +14,9 @@ import { describeGeoError, getCurrentPositionCompat } from "../utils/geolocation
 const networkStore = useNetworkStore();
 const { effectiveOnline } = storeToRefs(networkStore);
 
-const SAMPLE_INTERVAL_MOVING_MS = 15 * 1000;
-const SAMPLE_INTERVAL_STATIC_MS = 60 * 1000;
+const SAMPLE_INTERVAL_MS = 15 * 1000;
 const ACCEPTABLE_ACCURACY_M = 100;
 const GOOD_ACCURACY_M = 50;
-const STATIONARY_DISTANCE_M = 10;
 const JUMP_CHECK_WINDOW_MS = 60 * 1000;
 const JUMP_DISTANCE_M = 200;
 const JUMP_SPEED_MPS = 12;
@@ -128,16 +126,6 @@ const patrolStats = computed(() => {
   return { distanceMeters, durationMs, avgSpeedKmh };
 });
 
-const patrolStatsText = computed(() => {
-  const d = patrolStats.value.distanceMeters;
-  const h = Math.floor(patrolStats.value.durationMs / 3600000);
-  const m = Math.floor((patrolStats.value.durationMs % 3600000) / 60000);
-  const durationText = `${h}小时${m}分钟`;
-  const distanceText = d >= 1000 ? `${(d / 1000).toFixed(2)} km` : `${Math.round(d)} m`;
-  const speedText = patrolStats.value.avgSpeedKmh > 0 ? `${patrolStats.value.avgSpeedKmh.toFixed(1)} km/h` : "—";
-  return `里程 ${distanceText} · 时长 ${durationText} · 均速 ${speedText}`;
-});
-
 const amapDivRef = ref(null);
 const mapError = ref("");
 let TMapCtor = null;
@@ -159,15 +147,6 @@ const sampleBusy = ref(false);
 const lastSampleAt = ref(0);
 let lastSamplingWarnAt = 0;
 const exportPdfBusy = ref(false);
-
-const sampleHintText = computed(() => {
-  if (!activeTask.value) return "未开始采样";
-  const base = orderedPoints.value.length >= 2
-    ? (nextSamplingIntervalMs() <= SAMPLE_INTERVAL_MOVING_MS ? "采样频率：移动优先" : "采样频率：静止省电")
-    : "采样频率：初始化中";
-  if (!lastSampleAt.value) return `${base} · 暂无成功采样`;
-  return `${base} · 最近采样 ${formatTime(lastSampleAt.value)}`;
-});
 
 function formatCoord(n) {
   const x = Number(n);
@@ -515,15 +494,6 @@ function notifySamplingIssue(message) {
   showToast(message);
 }
 
-function nextSamplingIntervalMs() {
-  const pts = orderedPoints.value;
-  if (pts.length < 2) return SAMPLE_INTERVAL_MOVING_MS;
-  const last = pts[pts.length - 1];
-  const prev = pts[pts.length - 2];
-  const dist = haversineMeters(last, prev);
-  return dist <= STATIONARY_DISTANCE_M ? SAMPLE_INTERVAL_STATIC_MS : SAMPLE_INTERVAL_MOVING_MS;
-}
-
 function scheduleNextSample(delayMs) {
   if (!activeTask.value) return;
   clearSamplingTimer();
@@ -531,8 +501,8 @@ function scheduleNextSample(delayMs) {
     if (!activeTask.value) return;
     await recordSamplePoint();
     if (!activeTask.value) return;
-    scheduleNextSample(nextSamplingIntervalMs());
-  }, Math.max(1000, Number(delayMs) || SAMPLE_INTERVAL_MOVING_MS));
+    scheduleNextSample(SAMPLE_INTERVAL_MS);
+  }, Math.max(1000, Number(delayMs) || SAMPLE_INTERVAL_MS));
 }
 
 async function resolvePositionOnce() {
@@ -602,18 +572,18 @@ function startSamplingLoop(withImmediate) {
   if (withImmediate) {
     void recordSamplePoint().finally(() => {
       if (!activeTask.value) return;
-      scheduleNextSample(nextSamplingIntervalMs());
+      scheduleNextSample(SAMPLE_INTERVAL_MS);
     });
     return;
   }
-  scheduleNextSample(nextSamplingIntervalMs());
+  scheduleNextSample(SAMPLE_INTERVAL_MS);
 }
 
 async function sampleNow() {
   if (!activeTask.value) return;
   const ok = await recordSamplePoint();
   if (!activeTask.value) return;
-  scheduleNextSample(nextSamplingIntervalMs());
+  scheduleNextSample(SAMPLE_INTERVAL_MS);
   if (ok) showSuccessToast("已完成一次即时采样");
 }
 
@@ -884,8 +854,6 @@ onUnmounted(() => {
         <p class="hint tight">
           轨迹与事件坐标均保存在本机；离线可持续记录，联网后自动加载地图查看事件点与轨迹。
         </p>
-        <p class="hint tight sample-hint">{{ sampleHintText }}</p>
-        <div class="stats-chip">{{ patrolStatsText }}</div>
         <div v-if="mapError" class="map-fallback">
           <p>{{ mapError }}</p>
           <p v-if="mapError.includes('离线')" class="sub">
@@ -1044,20 +1012,6 @@ onUnmounted(() => {
 
 .hint.tight {
   margin-bottom: 8px;
-}
-
-.sample-hint {
-  color: #1989fa;
-}
-
-.stats-chip {
-  margin: 0 0 8px;
-  padding: 8px 10px;
-  font-size: 12px;
-  color: #323233;
-  background: #f7f8fa;
-  border: 1px solid #ebedf0;
-  border-radius: 8px;
 }
 
 .map-tool-row {
