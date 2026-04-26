@@ -3,6 +3,8 @@
  * - 冷启动首定位超时
  * - 室内弱信号仅能拿到网络定位
  * - 用户刚改权限，第一次调用仍失败
+ * - 在线时优先走融合定位（GPS + Wi-Fi + 基站）
+ * - 离线时退化为 GPS 优先
  */
 function getCurrentPositionOnce(options) {
   return new Promise((resolve, reject) => {
@@ -105,18 +107,26 @@ export async function getCurrentPositionCompat() {
   // 防止“一直加载”：总等待时长硬限制在 28s 内。
   return withTimeout(
     (async () => {
-      // 优先 GPS（你的场景更需要真实轨迹），再降级网络定位。
+      const online = typeof navigator !== "undefined" ? navigator.onLine !== false : true;
       const quickCached = { enableHighAccuracy: false, maximumAge: 2 * 60 * 1000, timeout: 4000 };
-      const gpsFresh = { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 };
-      const networkFresh = { enableHighAccuracy: false, maximumAge: 0, timeout: 15000 };
-      const watchGps = { enableHighAccuracy: true, maximumAge: 0, timeout: 18000 };
+      const fusedHigh = { enableHighAccuracy: true, maximumAge: 0, timeout: 18000 };
+      const fusedBalanced = { enableHighAccuracy: false, maximumAge: 0, timeout: 15000 };
+      const gpsStrict = { enableHighAccuracy: true, maximumAge: 0, timeout: 18000 };
+      const watchFusedHigh = { enableHighAccuracy: true, maximumAge: 0, timeout: 22000 };
 
-      const attempts = [
-        () => getCurrentPositionOnce(quickCached),
-        () => getCurrentPositionOnce(gpsFresh),
-        () => getCurrentPositionOnce(networkFresh),
-        () => watchPositionOnce(watchGps, 12000),
-      ];
+      // 在线：先缓存，再高精度融合，再平衡融合，最后 watch 兜底。
+      // 离线：只走 GPS 高精度链路，避免无网时反复尝试网络定位。
+      const attempts = online
+        ? [
+            () => getCurrentPositionOnce(quickCached),
+            () => getCurrentPositionOnce(fusedHigh),
+            () => getCurrentPositionOnce(fusedBalanced),
+            () => watchPositionOnce(watchFusedHigh, 12000),
+          ]
+        : [
+            () => getCurrentPositionOnce(gpsStrict),
+            () => watchPositionOnce(gpsStrict, 12000),
+          ];
 
       let lastErr = null;
       for (let i = 0; i < attempts.length; i += 1) {

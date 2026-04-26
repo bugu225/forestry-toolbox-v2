@@ -1,6 +1,6 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
-import { showConfirmDialog, showDialog, showFailToast, showSuccessToast, showToast } from "vant";
+import { showConfirmDialog, showFailToast, showSuccessToast, showToast } from "vant";
 import { storeToRefs } from "pinia";
 import { useNetworkStore } from "../stores/network";
 import PatrolEventSheet from "../components/PatrolEventSheet.vue";
@@ -126,6 +126,16 @@ const patrolStats = computed(() => {
   return { distanceMeters, durationMs, avgSpeedKmh };
 });
 
+const patrolStatsText = computed(() => {
+  const d = patrolStats.value.distanceMeters;
+  const h = Math.floor(patrolStats.value.durationMs / 3600000);
+  const m = Math.floor((patrolStats.value.durationMs % 3600000) / 60000);
+  const durationText = `${h}小时${m}分钟`;
+  const distanceText = d >= 1000 ? `${(d / 1000).toFixed(2)} km` : `${Math.round(d)} m`;
+  const speedText = patrolStats.value.avgSpeedKmh > 0 ? `${patrolStats.value.avgSpeedKmh.toFixed(1)} km/h` : "—";
+  return `里程 ${distanceText} · 时长 ${durationText} · 均速 ${speedText}`;
+});
+
 const amapDivRef = ref(null);
 const mapError = ref("");
 let TMapCtor = null;
@@ -147,6 +157,17 @@ const sampleBusy = ref(false);
 const lastSampleAt = ref(0);
 let lastSamplingWarnAt = 0;
 const exportPdfBusy = ref(false);
+const showEventDetailPopup = ref(false);
+const selectedEventDetail = ref(null);
+const showPdfConfigPopup = ref(false);
+const pdfForm = ref({
+  title: "智能巡护简报",
+  patrolUser: "护林员",
+  patrolDate: "",
+  areaText: "",
+  generateTime: "",
+  keyEventIds: [],
+});
 
 function formatCoord(n) {
   const x = Number(n);
@@ -425,19 +446,8 @@ function focusEventOnMap(ev) {
   if (typeof mapInst.centerAndZoom === "function") {
     mapInst.centerAndZoom(pos, 16);
   }
-  showDialog({
-    title: eventTypeLabel(ev.type),
-    message: [
-      `时间：${formatTime(ev.recorded_at)}`,
-      `坐标：${formatCoord(ev.lat)}, ${formatCoord(ev.lng)}`,
-      `定位来源：${locationSourceLabel(ev.source)}`,
-      `精度：${Number.isFinite(Number(ev.accuracy)) && Number(ev.accuracy) > 0 ? `约 ${Math.round(Number(ev.accuracy))} m` : "—"}`,
-      `照片：${ev.photo_dataurl ? "有" : "无"}`,
-      `备注：${ev.note || "—"}`,
-    ].join("\n"),
-    confirmButtonText: "知道了",
-    messageAlign: "left",
-  });
+  selectedEventDetail.value = ev;
+  showEventDetailPopup.value = true;
 }
 
 function stopPlayback() {
@@ -709,6 +719,7 @@ async function persistPatrolEvent({ lat, lng, type, note, photo, accuracy, sourc
   };
   await putRecord(stores.patrolEvents, rec);
   await loadPointsAndEvents(activeTask.value.local_id);
+  return rec;
 }
 
 async function quickRecordAnomaly() {
@@ -726,7 +737,7 @@ async function onQuickEventSelect(action) {
   eventSaveBusy.value = true;
   try {
     const { lat, lng, accuracy, source } = await resolveCoordsForEvent();
-    await persistPatrolEvent({
+    const rec = await persistPatrolEvent({
       lat,
       lng,
       type,
@@ -735,6 +746,9 @@ async function onQuickEventSelect(action) {
       accuracy,
       source,
     });
+    if (mapInst && rec) {
+      mapInst.panTo(toTLngLat(rec));
+    }
     showSuccessToast("已保存事件");
   } catch {
     showFailToast("未取得坐标：请等待轨迹采样后重试，或使用「记录事件」");
@@ -759,7 +773,7 @@ async function saveEvent() {
   eventSaveBusy.value = true;
   try {
     const { lat, lng, accuracy, source } = await resolveCoordsForEvent();
-    await persistPatrolEvent({
+    const rec = await persistPatrolEvent({
       lat,
       lng,
       type: eventType.value,
@@ -768,6 +782,9 @@ async function saveEvent() {
       accuracy,
       source,
     });
+    if (mapInst && rec) {
+      mapInst.panTo(toTLngLat(rec));
+    }
     showEventSheet.value = false;
     showSuccessToast("事件已保存");
   } catch {
@@ -777,22 +794,71 @@ async function saveEvent() {
   }
 }
 
-async function exportPatrolPdf() {
+async function captureMapSnapshotOrNull() {
+  const el = amapDivRef.value;
+  if (!el) return null;
+  try {
+    const { default: html2canvas } = await import("html2canvas");
+    const canvas = await html2canvas(el, {
+      useCORS: true,
+      allowTaint: true,
+      backgroundColor: "#f7f8fa",
+      scale: 1,
+      logging: false,
+    });
+    return canvas.toDataURL("image/jpeg", 0.9);
+  } catch {
+    return null;
+  }
+}
+
+function resetPdfFormDefaults() {
+  const now = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  pdfForm.value = {
+    title: "智能巡护简报",
+    patrolUser: "护林员",
+    patrolDate: `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}`,
+    areaText: "",
+    generateTime: `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}T${p(now.getHours())}:${p(now.getMinutes())}`,
+    keyEventIds: events.value.slice(0, 3).map((e) => e.local_id),
+  };
+}
+
+function openPdfConfig() {
   if (!points.value.length && !events.value.length) {
     showToast("暂无可导出的巡护数据");
     return;
   }
+  resetPdfFormDefaults();
+  showPdfConfigPopup.value = true;
+}
+
+async function exportPatrolPdf() {
   exportPdfBusy.value = true;
   try {
+    const mapSnapshot = await captureMapSnapshotOrNull();
+    const generateTimeText = pdfForm.value.generateTime
+      ? String(pdfForm.value.generateTime).replace("T", " ")
+      : formatTime(Date.now());
     await exportPatrolPdfReport({
       points: orderedPoints.value,
       events: events.value,
       patrolStats: patrolStats.value,
-      patrolStatusText: activeTask.value ? "进行中" : endedTaskView.value ? "已结束" : "未开始",
+      reportMeta: {
+        title: pdfForm.value.title || "智能巡护简报",
+        patrolUser: pdfForm.value.patrolUser || "护林员",
+        patrolDate: pdfForm.value.patrolDate || formatTime(Date.now()).slice(0, 10),
+        areaText: pdfForm.value.areaText || "未填写",
+        generateTimeText,
+      },
+      mapDataUrlPreferred: mapSnapshot,
+      keyEventIds: pdfForm.value.keyEventIds || [],
       eventTypeLabel,
       eventTypeColor,
       formatTime,
     });
+    showPdfConfigPopup.value = false;
     showSuccessToast("PDF 已导出");
   } catch {
     showFailToast("导出失败，请稍后重试");
@@ -854,6 +920,7 @@ onUnmounted(() => {
         <p class="hint tight">
           轨迹与事件坐标均保存在本机；离线可持续记录，联网后自动加载地图查看事件点与轨迹。
         </p>
+        <div class="stats-chip">{{ patrolStatsText }}</div>
         <div v-if="mapError" class="map-fallback">
           <p>{{ mapError }}</p>
           <p v-if="mapError.includes('离线')" class="sub">
@@ -907,7 +974,7 @@ onUnmounted(() => {
           block
           plain
           :loading="exportPdfBusy"
-          @click="exportPatrolPdf"
+          @click="openPdfConfig"
         >
           导出PDF巡护报告
         </van-button>
@@ -963,6 +1030,52 @@ onUnmounted(() => {
     @save="saveEvent"
   />
 
+  <van-popup v-model:show="showEventDetailPopup" position="bottom" round :style="{ padding: '16px' }">
+    <h3 class="sheet-title">{{ eventTypeLabel(selectedEventDetail?.type) }}</h3>
+    <div class="detail-lines">
+      <p>时间：{{ formatTime(selectedEventDetail?.recorded_at) }}</p>
+      <p>坐标：{{ formatCoord(selectedEventDetail?.lat) }}, {{ formatCoord(selectedEventDetail?.lng) }}</p>
+      <p>定位来源：{{ locationSourceLabel(selectedEventDetail?.source) }}</p>
+      <p>精度：{{ Number.isFinite(Number(selectedEventDetail?.accuracy)) && Number(selectedEventDetail?.accuracy) > 0 ? `约 ${Math.round(Number(selectedEventDetail?.accuracy))} m` : "—" }}</p>
+      <p>备注：{{ selectedEventDetail?.note || "—" }}</p>
+    </div>
+    <img v-if="selectedEventDetail?.photo_dataurl" :src="selectedEventDetail.photo_dataurl" alt="事件照片" class="detail-photo" />
+    <div class="detail-actions">
+      <van-button block type="primary" @click="showEventDetailPopup = false">关闭</van-button>
+    </div>
+  </van-popup>
+
+  <van-popup v-model:show="showPdfConfigPopup" position="bottom" round :style="{ padding: '16px' }">
+    <h3 class="sheet-title">导出PDF设置</h3>
+    <van-field v-model="pdfForm.title" label="标题" placeholder="智能巡护简报" />
+    <van-field v-model="pdfForm.patrolUser" label="巡护员" placeholder="护林员姓名" />
+    <van-field v-model="pdfForm.patrolDate" label="日期" placeholder="YYYY-MM-DD" />
+    <van-field v-model="pdfForm.areaText" label="区域" placeholder="如：第3责任区" />
+    <div class="pdf-time-row">
+      <span class="pdf-time-label">生成时间</span>
+      <input v-model="pdfForm.generateTime" class="pdf-time-input" type="datetime-local" />
+      <van-button size="small" plain type="primary" @click="resetPdfFormDefaults">当前时间</van-button>
+    </div>
+    <div class="pdf-key-events">
+      <div class="pdf-key-title">重点事件（可多选）</div>
+      <van-checkbox-group v-model="pdfForm.keyEventIds">
+        <van-checkbox
+          v-for="ev in events.slice(0, 10)"
+          :key="ev.local_id"
+          :name="ev.local_id"
+          shape="square"
+          class="pdf-key-item"
+        >
+          {{ eventTypeLabel(ev.type) }} · {{ formatTime(ev.recorded_at) }}{{ ev.note ? ` · ${ev.note}` : "" }}
+        </van-checkbox>
+      </van-checkbox-group>
+    </div>
+    <div class="sheet-actions">
+      <van-button block type="default" @click="showPdfConfigPopup = false">取消</van-button>
+      <van-button block type="primary" :loading="exportPdfBusy" @click="exportPatrolPdf">生成并导出</van-button>
+    </div>
+  </van-popup>
+
 </template>
 
 <style scoped>
@@ -1001,6 +1114,16 @@ onUnmounted(() => {
 
 .map-wrap {
   margin-bottom: 12px;
+}
+
+.stats-chip {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: #323233;
+  background: #f7f8fa;
+  border: 1px solid #ebedf0;
+  border-radius: 8px;
 }
 
 .hint {
@@ -1150,6 +1273,92 @@ onUnmounted(() => {
 .play-label {
   font-size: 13px;
   color: #646566;
+}
+
+.sheet-title {
+  margin: 0 0 12px;
+  font-size: 16px;
+  text-align: center;
+}
+
+.sheet-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.sheet-actions .van-button {
+  flex: 1;
+}
+
+.detail-lines {
+  font-size: 13px;
+  color: #323233;
+  line-height: 1.6;
+  margin-bottom: 10px;
+}
+
+.detail-lines p {
+  margin: 0 0 4px;
+}
+
+.detail-photo {
+  display: block;
+  width: 100%;
+  max-height: 220px;
+  object-fit: contain;
+  border-radius: 8px;
+  border: 1px solid #ebedf0;
+  margin-bottom: 12px;
+}
+
+.detail-actions {
+  margin-top: 6px;
+}
+
+.pdf-time-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 12px;
+}
+
+.pdf-time-label {
+  width: 68px;
+  font-size: 14px;
+  color: #323233;
+  flex-shrink: 0;
+}
+
+.pdf-time-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid #ebedf0;
+  border-radius: 8px;
+  height: 34px;
+  padding: 0 8px;
+  background: #fff;
+  color: #323233;
+}
+
+.pdf-key-events {
+  margin-bottom: 12px;
+  padding: 10px;
+  border: 1px solid #ebedf0;
+  border-radius: 8px;
+  background: #fafafa;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.pdf-key-title {
+  font-size: 13px;
+  color: #646566;
+  margin-bottom: 8px;
+}
+
+.pdf-key-item {
+  display: block;
+  margin-bottom: 8px;
 }
 
 </style>

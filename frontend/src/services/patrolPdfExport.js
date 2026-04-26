@@ -50,66 +50,162 @@ function drawMiniMapDataUrl(points, events, eventTypeColor, width = 1000, height
   return canvas.toDataURL("image/jpeg", 0.9);
 }
 
-function buildEventSummaryLines(events, eventTypeLabel, formatTime, limit = 12) {
-  const rows = (events || [])
-    .slice(0, limit)
-    .map((ev, idx) => `${idx + 1}. ${eventTypeLabel(ev.type)} ${formatTime(ev.recorded_at)} ${ev.note ? `- ${ev.note}` : ""}`);
-  return rows.length ? rows : ["无事件记录"];
+function loadImage(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("image_load_failed"));
+    img.src = dataUrl;
+  });
+}
+
+function drawTextLines(ctx, text, x, y, maxWidth, lineHeight) {
+  const chars = String(text || "").split("");
+  let line = "";
+  let lineCount = 0;
+  chars.forEach((ch, idx) => {
+    const test = line + ch;
+    if (ctx.measureText(test).width > maxWidth && line) {
+      ctx.fillText(line, x, y + lineCount * lineHeight);
+      line = ch;
+      lineCount += 1;
+      return;
+    }
+    line = test;
+    if (idx === chars.length - 1) ctx.fillText(line, x, y + lineCount * lineHeight);
+  });
+  return lineCount + 1;
+}
+
+async function buildReportImageDataUrl({
+  title,
+  patrolUser,
+  patrolDate,
+  areaText,
+  generateTimeText,
+  patrolStats,
+  events,
+  keyEventIds,
+  mapDataUrlPreferred,
+  points,
+  eventTypeLabel,
+  eventTypeColor,
+  formatTime,
+}) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 1240;
+  canvas.height = 1960;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return "";
+  ctx.fillStyle = "#f3f4f6";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  ctx.fillStyle = "#111827";
+  ctx.font = "bold 54px sans-serif";
+  ctx.fillText(title || "智能巡护简报", 56, 92);
+  ctx.font = "30px sans-serif";
+  ctx.fillStyle = "#374151";
+  ctx.fillText(`巡护员：${patrolUser || "护林员"}`, 56, 142);
+  ctx.fillText(`日期：${patrolDate || "—"}`, 56, 182);
+  ctx.fillText(`区域：${areaText || "—"}`, 56, 222);
+  ctx.fillText(`生成时间：${generateTimeText || "—"}`, 56, 262);
+
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(44, 290, 1152, 180);
+  ctx.fillStyle = "#111827";
+  ctx.font = "bold 36px sans-serif";
+  ctx.fillText("核心数据", 68, 340);
+  const distanceText = patrolStats.distanceMeters >= 1000
+    ? `${(patrolStats.distanceMeters / 1000).toFixed(2)} km`
+    : `${Math.round(patrolStats.distanceMeters)} m`;
+  ctx.font = "30px sans-serif";
+  ctx.fillText(`时长：${Math.round(patrolStats.durationMs / 60000)} 分钟`, 68, 394);
+  ctx.fillText(`里程：${distanceText}`, 450, 394);
+  ctx.fillText(`事件：${(events || []).length} 条`, 860, 394);
+
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(44, 492, 1152, 560);
+  ctx.fillStyle = "#111827";
+  ctx.font = "bold 36px sans-serif";
+  ctx.fillText("地图截图（轨迹+事件）", 68, 546);
+  const mapDataUrl = mapDataUrlPreferred || drawMiniMapDataUrl(points, events, eventTypeColor, 1080, 460);
+  try {
+    const mapImg = await loadImage(mapDataUrl);
+    ctx.drawImage(mapImg, 68, 570, 1104, 450);
+  } catch {
+    ctx.fillStyle = "#9ca3af";
+    ctx.fillRect(68, 570, 1104, 450);
+  }
+
+  const selected = (events || []).filter((ev) => (keyEventIds || []).includes(ev.local_id));
+  const keyEvents = selected.length ? selected : (events || []).slice(0, 3);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(44, 1076, 1152, 820);
+  ctx.fillStyle = "#111827";
+  ctx.font = "bold 36px sans-serif";
+  ctx.fillText("重点事件", 68, 1130);
+  ctx.font = "28px sans-serif";
+  ctx.fillStyle = "#374151";
+  let y = 1186;
+  if (!keyEvents.length) {
+    ctx.fillText("无事件记录", 68, y);
+    y += 40;
+  } else {
+    keyEvents.forEach((ev, idx) => {
+      ctx.fillStyle = eventTypeColor(ev.type);
+      ctx.beginPath();
+      ctx.arc(78, y - 8, 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#374151";
+      const titleLine = `${idx + 1}. ${eventTypeLabel(ev.type)} · ${formatTime(ev.recorded_at)}`;
+      ctx.fillText(titleLine, 96, y);
+      y += 36;
+      const lines = drawTextLines(
+        ctx,
+        `坐标 ${Number(ev.lat).toFixed(5)}, ${Number(ev.lng).toFixed(5)}${ev.note ? `；备注：${ev.note}` : ""}`,
+        96,
+        y,
+        1050,
+        34
+      );
+      y += lines * 34 + 14;
+    });
+  }
+  ctx.fillStyle = "#0f766e";
+  ctx.font = "bold 30px sans-serif";
+  ctx.fillText("行动建议：优先处理重点事件，复查同类高频区域。", 68, Math.min(1860, y + 22));
+  return canvas.toDataURL("image/jpeg", 0.92);
 }
 
 export async function exportPatrolPdfReport({
   points,
   events,
   patrolStats,
-  patrolStatusText,
+  reportMeta,
+  mapDataUrlPreferred,
+  keyEventIds,
   eventTypeLabel,
   eventTypeColor,
   formatTime,
 }) {
   const { jsPDF } = await import("jspdf");
+  const imageDataUrl = await buildReportImageDataUrl({
+    title: reportMeta?.title,
+    patrolUser: reportMeta?.patrolUser,
+    patrolDate: reportMeta?.patrolDate,
+    areaText: reportMeta?.areaText,
+    generateTimeText: reportMeta?.generateTimeText,
+    patrolStats,
+    events,
+    keyEventIds,
+    mapDataUrlPreferred,
+    points,
+    eventTypeLabel,
+    eventTypeColor,
+    formatTime,
+  });
   const pdf = new jsPDF({ unit: "mm", format: "a4" });
-  const pageW = 210;
-  let y = 14;
-
-  pdf.setFont("helvetica", "bold");
-  pdf.setFontSize(16);
-  pdf.text("巡护报告", 14, y);
-  y += 8;
-  pdf.setFont("helvetica", "normal");
-  pdf.setFontSize(10);
-  pdf.text(`导出时间：${formatTime(Date.now())}`, 14, y);
-  y += 6;
-  pdf.text(`巡护状态：${patrolStatusText}`, 14, y);
-  y += 6;
-  const distanceText = patrolStats.distanceMeters >= 1000
-    ? `${(patrolStats.distanceMeters / 1000).toFixed(2)} km`
-    : `${Math.round(patrolStats.distanceMeters)} m`;
-  pdf.text(`统计：里程 ${distanceText}，时长 ${Math.round(patrolStats.durationMs / 60000)} 分钟，事件 ${(events || []).length} 条`, 14, y);
-  y += 8;
-
-  const mapDataUrl = drawMiniMapDataUrl(points, events, eventTypeColor);
-  if (mapDataUrl) {
-    pdf.setFont("helvetica", "bold");
-    pdf.text("轨迹与事件地图", 14, y);
-    y += 3;
-    pdf.addImage(mapDataUrl, "JPEG", 14, y, pageW - 28, 78);
-    y += 84;
-  }
-
-  pdf.setFont("helvetica", "bold");
-  pdf.text("事件摘要", 14, y);
-  y += 6;
-  pdf.setFont("helvetica", "normal");
-  pdf.setFontSize(10);
-  const lines = buildEventSummaryLines(events, eventTypeLabel, formatTime, 12);
-  for (const line of lines) {
-    if (y > 285) {
-      pdf.addPage();
-      y = 16;
-    }
-    pdf.text(line, 14, y);
-    y += 5.6;
-  }
+  pdf.addImage(imageDataUrl, "JPEG", 0, 0, 210, 297);
 
   const d = new Date();
   const p = (n) => String(n).padStart(2, "0");
