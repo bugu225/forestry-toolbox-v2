@@ -1,18 +1,13 @@
 import { createRouter, createWebHistory } from "vue-router";
 
-import HomeView from "../views/HomeView.vue";
-import IdentifyView from "../views/IdentifyView.vue";
-import LoginView from "../views/LoginView.vue";
-import QaView from "../views/QaView.vue";
-import PatrolView from "../views/PatrolView.vue";
 import { useAuthStore } from "../stores/auth";
 
 const routes = [
-  { path: "/login", name: "login", component: LoginView },
-  { path: "/", name: "home", component: HomeView, meta: { requiresAuth: true } },
-  { path: "/identify", name: "identify", component: IdentifyView, meta: { requiresAuth: true } },
-  { path: "/qa", name: "qa", component: QaView, meta: { requiresAuth: true } },
-  { path: "/patrol", name: "patrol", component: PatrolView, meta: { requiresAuth: true } },
+  { path: "/login", name: "login", component: () => import("../views/LoginView.vue") },
+  { path: "/", name: "home", component: () => import("../views/HomeView.vue"), meta: { requiresAuth: true } },
+  { path: "/identify", name: "identify", component: () => import("../views/IdentifyView.vue"), meta: { requiresAuth: true } },
+  { path: "/qa", name: "qa", component: () => import("../views/QaView.vue"), meta: { requiresAuth: true } },
+  { path: "/patrol", name: "patrol", component: () => import("../views/PatrolView.vue"), meta: { requiresAuth: true } },
 ];
 
 const router = createRouter({

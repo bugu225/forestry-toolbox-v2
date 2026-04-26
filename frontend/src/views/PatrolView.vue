@@ -2,9 +2,12 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { showConfirmDialog, showDialog, showFailToast, showSuccessToast, showToast } from "vant";
 import { storeToRefs } from "pinia";
-import { jsPDF } from "jspdf";
 import { useNetworkStore } from "../stores/network";
+import PatrolEventSheet from "../components/PatrolEventSheet.vue";
+import PatrolEventList from "../components/PatrolEventList.vue";
+import PatrolTrackList from "../components/PatrolTrackList.vue";
 import { loadTianditu } from "../services/tiandituLoader";
+import { exportPatrolPdfReport } from "../services/patrolPdfExport";
 import { deleteRecord, getAllRecords, putRecord, stores } from "../services/offlineDb";
 import { describeGeoError, getCurrentPositionCompat } from "../utils/geolocation";
 
@@ -83,7 +86,6 @@ const showEventSheet = ref(false);
 const eventType = ref("pest");
 const eventNote = ref("");
 const eventPhotoDataUrl = ref("");
-const photoInputRef = ref(null);
 
 /** 有效坐标、按时间排序（与地图折线/回放滑块一致） */
 const orderedPoints = computed(() =>
@@ -782,53 +784,6 @@ function openEventSheet() {
   showEventSheet.value = true;
 }
 
-function triggerPhotoPick() {
-  photoInputRef.value?.click();
-}
-
-function compressImageFile(file, maxSide = 1600, quality = 0.75) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error("read_failed"));
-    reader.onload = () => {
-      const img = new Image();
-      img.onerror = () => reject(new Error("image_decode_failed"));
-      img.onload = () => {
-        const ratio = Math.min(1, maxSide / Math.max(img.width, img.height));
-        const w = Math.max(1, Math.round(img.width * ratio));
-        const h = Math.max(1, Math.round(img.height * ratio));
-        const canvas = document.createElement("canvas");
-        canvas.width = w;
-        canvas.height = h;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) {
-          reject(new Error("canvas_failed"));
-          return;
-        }
-        ctx.drawImage(img, 0, 0, w, h);
-        resolve(canvas.toDataURL("image/jpeg", quality));
-      };
-      img.src = typeof reader.result === "string" ? reader.result : "";
-    };
-    reader.readAsDataURL(file);
-  });
-}
-
-async function onPhotoPick(ev) {
-  const f = ev.target?.files?.[0];
-  if (!f) return;
-  try {
-    eventPhotoDataUrl.value = await compressImageFile(f);
-  } catch {
-    const reader = new FileReader();
-    reader.onload = () => {
-      eventPhotoDataUrl.value = typeof reader.result === "string" ? reader.result : "";
-    };
-    reader.readAsDataURL(f);
-  }
-  ev.target.value = "";
-}
-
 async function saveEvent() {
   if (!activeTask.value) return;
   eventSaveBusy.value = true;
@@ -852,57 +807,6 @@ async function saveEvent() {
   }
 }
 
-function drawMiniMapDataUrl(width = 1000, height = 420) {
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return "";
-  ctx.fillStyle = "#f7f8fa";
-  ctx.fillRect(0, 0, width, height);
-  const pts = orderedPoints.value.filter(isValidLngLat);
-  if (!pts.length) return canvas.toDataURL("image/jpeg", 0.9);
-  const lngs = pts.map((p) => Number(p.lng));
-  const lats = pts.map((p) => Number(p.lat));
-  const minLng = Math.min(...lngs);
-  const maxLng = Math.max(...lngs);
-  const minLat = Math.min(...lats);
-  const maxLat = Math.max(...lats);
-  const dx = Math.max(1e-9, maxLng - minLng);
-  const dy = Math.max(1e-9, maxLat - minLat);
-  const pad = 22;
-  const toXY = (row) => {
-    const x = pad + ((Number(row.lng) - minLng) / dx) * (width - pad * 2);
-    const y = height - pad - ((Number(row.lat) - minLat) / dy) * (height - pad * 2);
-    return [x, y];
-  };
-  ctx.strokeStyle = "#1989fa";
-  ctx.lineWidth = 4;
-  ctx.beginPath();
-  pts.forEach((p, i) => {
-    const [x, y] = toXY(p);
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  });
-  ctx.stroke();
-  for (const ev of events.value.filter(isValidLngLat)) {
-    const [x, y] = toXY(ev);
-    ctx.fillStyle = eventTypeColor(ev.type);
-    ctx.beginPath();
-    ctx.arc(x, y, 6, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  return canvas.toDataURL("image/jpeg", 0.9);
-}
-
-function buildEventSummaryLines(limit = 8) {
-  const rows = events.value
-    .slice(0, limit)
-    .map((ev, idx) => `${idx + 1}. ${eventTypeLabel(ev.type)} ${formatTime(ev.recorded_at)} ${ev.note ? `- ${ev.note}` : ""}`);
-  if (!rows.length) return ["无事件记录"];
-  return rows;
-}
-
 async function exportPatrolPdf() {
   if (!points.value.length && !events.value.length) {
     showToast("暂无可导出的巡护数据");
@@ -910,49 +814,15 @@ async function exportPatrolPdf() {
   }
   exportPdfBusy.value = true;
   try {
-    const pdf = new jsPDF({ unit: "mm", format: "a4" });
-    const pageW = 210;
-    let y = 14;
-    pdf.setFont("helvetica", "bold");
-    pdf.setFontSize(16);
-    pdf.text("巡护报告", 14, y);
-    y += 8;
-    pdf.setFont("helvetica", "normal");
-    pdf.setFontSize(10);
-    pdf.text(`导出时间：${formatTime(Date.now())}`, 14, y);
-    y += 6;
-    pdf.text(`巡护状态：${activeTask.value ? "进行中" : endedTaskView.value ? "已结束" : "未开始"}`, 14, y);
-    y += 6;
-    const distanceText = patrolStats.value.distanceMeters >= 1000
-      ? `${(patrolStats.value.distanceMeters / 1000).toFixed(2)} km`
-      : `${Math.round(patrolStats.value.distanceMeters)} m`;
-    pdf.text(`统计：里程 ${distanceText}，时长 ${Math.round(patrolStats.value.durationMs / 60000)} 分钟，事件 ${events.value.length} 条`, 14, y);
-    y += 8;
-    const mapDataUrl = drawMiniMapDataUrl();
-    if (mapDataUrl) {
-      pdf.setFont("helvetica", "bold");
-      pdf.text("轨迹与事件地图", 14, y);
-      y += 3;
-      pdf.addImage(mapDataUrl, "JPEG", 14, y, pageW - 28, 78);
-      y += 84;
-    }
-    pdf.setFont("helvetica", "bold");
-    pdf.text("事件摘要", 14, y);
-    y += 6;
-    pdf.setFont("helvetica", "normal");
-    pdf.setFontSize(10);
-    const lines = buildEventSummaryLines(12);
-    for (const line of lines) {
-      if (y > 285) {
-        pdf.addPage();
-        y = 16;
-      }
-      pdf.text(line, 14, y);
-      y += 5.6;
-    }
-    const d = new Date();
-    const p = (n) => String(n).padStart(2, "0");
-    pdf.save(`巡护报告_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}.pdf`);
+    await exportPatrolPdfReport({
+      points: orderedPoints.value,
+      events: events.value,
+      patrolStats: patrolStats.value,
+      patrolStatusText: activeTask.value ? "进行中" : endedTaskView.value ? "已结束" : "未开始",
+      eventTypeLabel,
+      eventTypeColor,
+      formatTime,
+    });
     showSuccessToast("PDF 已导出");
   } catch {
     showFailToast("导出失败，请稍后重试");
@@ -1086,34 +956,23 @@ onUnmounted(() => {
         <van-button size="small" :type="showTrackList ? 'primary' : 'default'" plain @click="showTrackList = !showTrackList">轨迹</van-button>
       </div>
 
-      <van-cell-group v-if="showEventList" inset title="事件列表（本机存放）" class="block">
-        <van-empty v-if="!events.length" description="暂无事件" />
-        <van-swipe-cell v-for="ev in events" :key="ev.local_id">
-          <van-cell
-            :title="`${eventTypeLabel(ev.type)}`"
-            :label="`${formatTime(ev.recorded_at)} · ${formatCoord(ev.lat)}, ${formatCoord(ev.lng)} · ${locationSourceLabel(ev.source)}${Number.isFinite(Number(ev.accuracy)) && Number(ev.accuracy) > 0 ? ' · 精度约 ' + Math.round(Number(ev.accuracy)) + ' m' : ''}${ev.note ? ' · ' + ev.note : ''}${ev.photo_dataurl ? ' · 含照片' : ''}`"
-            is-link
-            @click="focusEventOnMap(ev)"
-          />
-          <template #right>
-            <van-button square type="danger" text="删除" class="swipe-del" @click="deleteEvent(ev)" />
-          </template>
-        </van-swipe-cell>
-      </van-cell-group>
+      <PatrolEventList
+        :show="showEventList"
+        :events="events"
+        :event-type-label="eventTypeLabel"
+        :format-time="formatTime"
+        :format-coord="formatCoord"
+        :location-source-label="locationSourceLabel"
+        @focus="focusEventOnMap"
+        @delete="deleteEvent"
+      />
 
-      <van-cell-group v-if="showTrackList" inset title="轨迹点（本机存放）" class="block trail-block">
-        <van-empty
-          v-if="!points.length"
-          image="search"
-          description="尚无采样点（开始后立即采样，后续按移动状态自动调整频率）"
-        />
-        <van-cell
-          v-for="p in points.slice(-6).reverse()"
-          :key="p.local_id"
-          :title="`${formatCoord(p.lat)}, ${formatCoord(p.lng)}`"
-          :label="`时间 ${formatTime(p.recorded_at)} · 精度约 ${Number.isFinite(Number(p.accuracy)) ? Math.round(p.accuracy) : '—'} m · 质量 ${p.quality_level || 'unknown'}`"
-        />
-      </van-cell-group>
+      <PatrolTrackList
+        :show="showTrackList"
+        :points="points"
+        :format-time="formatTime"
+        :format-coord="formatCoord"
+      />
     </div>
   </div>
   <van-action-sheet
@@ -1126,23 +985,15 @@ onUnmounted(() => {
       @select="onQuickEventSelect"
     />
 
-  <van-popup v-model:show="showEventSheet" position="bottom" round :style="{ padding: '16px' }">
-      <h3 class="sheet-title">记录事件</h3>
-      <van-radio-group v-model="eventType" direction="horizontal" class="type-row">
-        <van-radio v-for="t in EVENT_TYPES" :key="t.value" :name="t.value">{{ t.label }}</van-radio>
-      </van-radio-group>
-      <van-field v-model="eventNote" rows="2" autosize type="textarea" maxlength="500" show-word-limit label="备注" placeholder="现场情况描述" />
-      <div class="uploader-wrap">
-        <span class="ul-label">现场照片（可选）</span>
-        <input ref="photoInputRef" type="file" accept="image/*" class="hidden-file" @change="onPhotoPick" />
-        <van-button size="small" type="primary" plain @click="triggerPhotoPick">选择照片</van-button>
-        <img v-if="eventPhotoDataUrl" :src="eventPhotoDataUrl" alt="预览" class="photo-preview" />
-      </div>
-      <div class="sheet-actions">
-        <van-button block type="default" @click="showEventSheet = false">取消</van-button>
-        <van-button block type="primary" :loading="eventSaveBusy" @click="saveEvent">保存</van-button>
-      </div>
-  </van-popup>
+  <PatrolEventSheet
+    v-model:show="showEventSheet"
+    v-model:event-type="eventType"
+    v-model:event-note="eventNote"
+    v-model:event-photo-data-url="eventPhotoDataUrl"
+    :event-types="EVENT_TYPES"
+    :saving="eventSaveBusy"
+    @save="saveEvent"
+  />
 
 </template>
 
@@ -1197,10 +1048,6 @@ onUnmounted(() => {
 
 .sample-hint {
   color: #1989fa;
-}
-
-.trail-block {
-  margin-top: 12px;
 }
 
 .stats-chip {
@@ -1297,19 +1144,6 @@ onUnmounted(() => {
   color: #ff976a;
 }
 
-.hidden-file {
-  display: none;
-}
-
-.photo-preview {
-  display: block;
-  max-width: 100%;
-  max-height: 160px;
-  margin-top: 10px;
-  border-radius: 8px;
-  object-fit: contain;
-}
-
 .dot {
   width: 8px;
   height: 8px;
@@ -1333,10 +1167,6 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 10px;
   margin-bottom: 16px;
-}
-
-.block {
-  margin-top: 8px;
 }
 
 .amap-box {
@@ -1368,39 +1198,4 @@ onUnmounted(() => {
   color: #646566;
 }
 
-.sheet-title {
-  margin: 0 0 12px;
-  font-size: 16px;
-  text-align: center;
-}
-
-.type-row {
-  margin-bottom: 12px;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.uploader-wrap {
-  margin: 12px 0;
-}
-
-.ul-label {
-  display: block;
-  font-size: 14px;
-  color: #323233;
-  margin-bottom: 8px;
-}
-
-.sheet-actions {
-  display: flex;
-  gap: 10px;
-}
-
-.sheet-actions .van-button {
-  flex: 1;
-}
-
-.swipe-del {
-  height: 100%;
-}
 </style>
