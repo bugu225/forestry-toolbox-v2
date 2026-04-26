@@ -4,11 +4,11 @@ import { storeToRefs } from "pinia";
 import { useRouter } from "vue-router";
 import { showDialog, showToast } from "vant";
 import { describeGeoError, getCurrentPositionCompat } from "../utils/geolocation";
+import apiClient from "../api/client";
 import { useAuthStore } from "../stores/auth";
 import { useNetworkStore } from "../stores/network";
 
-const PWA_TIP_DISMISS_KEY = "ftb2_home_pwa_tip_dismissed";
-
+const PWA_TIP_DISMISS_KEY = "ftb2_home_pwa_tip_dismissed"
 const authStore = useAuthStore();
 const networkStore = useNetworkStore();
 const { simulateOffline, effectiveOnline } = storeToRefs(networkStore);
@@ -198,6 +198,128 @@ function requestLocationPermission() {
     });
 }
 
+function normalizeCheck(ok, detail) {
+  return `${ok ? "✅" : "❌"} ${detail}`;
+}
+
+async function checkApiReachable(label, action) {
+  try {
+    const res = await action();
+    return normalizeCheck(true, `${label}：可用（${res}）`);
+  } catch (error) {
+    const code = Number(error?.response?.status || error?.status || 0);
+    const msg = code ? `HTTP ${code}` : (error?.message || "请求失败");
+    // 401/403/404 说明链路可达，仅业务不可用或权限不足
+    if ([400, 401, 403, 404, 405].includes(code)) {
+      return normalizeCheck(true, `${label}：链路可达（${msg}）`);
+    }
+    return normalizeCheck(false, `${label}：不可用（${msg}）`);
+  }
+}
+
+async function runAllInOneDiagnostics() {
+  const lines = [];
+  const secure = typeof window !== "undefined" ? Boolean(window.isSecureContext) : false;
+  lines.push(`网络状态：${effectiveOnline.value ? "在线" : "离线"}`);
+  lines.push(`HTTPS 安全上下文：${secure ? "是" : "否"}`);
+  lines.push("");
+  lines.push("权限与设备：");
+
+  let geoPermissionText = "未知";
+  if (navigator.permissions?.query) {
+    try {
+      const status = await navigator.permissions.query({ name: "geolocation" });
+      geoPermissionText = status?.state || "unknown";
+    } catch {
+      geoPermissionText = "浏览器不返回（正常）";
+    }
+  } else {
+    geoPermissionText = "当前浏览器不支持 Permissions API";
+  }
+  lines.push(`- 定位权限：${geoPermissionText}`);
+
+  let camPermissionText = "未知";
+  if (navigator.permissions?.query) {
+    try {
+      const status = await navigator.permissions.query({ name: "camera" });
+      camPermissionText = status?.state || "unknown";
+    } catch {
+      camPermissionText = "浏览器不返回（正常）";
+    }
+  } else {
+    camPermissionText = "当前浏览器不支持 Permissions API";
+  }
+  lines.push(`- 相机权限：${camPermissionText}`);
+
+  const hasGeo = typeof navigator !== "undefined" && Boolean(navigator.geolocation);
+  lines.push(`- 浏览器定位能力：${hasGeo ? "支持" : "不支持"}`);
+  if (hasGeo) {
+    try {
+      const pos = await getCurrentPositionCompat();
+      const acc = Number(pos?.coords?.accuracy || 0);
+      lines.push(normalizeCheck(true, `实时定位测试通过（精度约 ${Number.isFinite(acc) ? Math.round(acc) : "—"}m）`));
+    } catch (error) {
+      lines.push(normalizeCheck(false, `实时定位测试失败（${describeGeoError(error, "未知错误")}）`));
+    }
+  } else {
+    lines.push(normalizeCheck(false, "实时定位测试失败（浏览器不支持 geolocation）"));
+  }
+
+  const hasCameraApi = Boolean(navigator.mediaDevices?.getUserMedia);
+  lines.push(`- 浏览器相机能力：${hasCameraApi ? "支持" : "不支持"}`);
+  if (hasCameraApi) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      for (const t of stream.getTracks()) t.stop();
+      lines.push(normalizeCheck(true, "相机可调用（已成功获取视频流）"));
+    } catch (error) {
+      lines.push(normalizeCheck(false, `相机调用失败（${error?.name || "未知错误"}）`));
+    }
+  } else {
+    lines.push(normalizeCheck(false, "相机调用失败（浏览器不支持媒体设备 API）"));
+  }
+
+  lines.push("");
+  lines.push("接口连通性：");
+  lines.push(
+    await checkApiReachable("健康检查 /api/health", async () => {
+      const res = await fetch("/api/health", { credentials: "same-origin" });
+      return `HTTP ${res.status}`;
+    })
+  );
+  lines.push(
+    await checkApiReachable("地图配置 /api/public/client-config", async () => {
+      const res = await fetch("/api/public/client-config", { credentials: "same-origin" });
+      return `HTTP ${res.status}`;
+    })
+  );
+  lines.push(
+    await checkApiReachable("问答接口 /api/qa/sessions", async () => {
+      const res = await apiClient.get("/qa/sessions", { timeout: 10000 });
+      return `HTTP ${res.status}`;
+    })
+  );
+  lines.push(
+    await checkApiReachable("识图接口 /api/identify/sync", async () => {
+      const res = await apiClient.post("/identify/sync", { jobs: [] }, { timeout: 10000 });
+      return `HTTP ${res.status}`;
+    })
+  );
+
+  lines.push("");
+  lines.push("建议：");
+  lines.push("1. 若定位或相机失败，请先检查系统设置中的浏览器权限；");
+  lines.push("2. 若 API 不可用，请检查后端服务、反向代理和 token 登录状态；");
+  lines.push("3. 若地图配置失败，请确认 /api/public/client-config 已正常返回。");
+
+  showDialog({
+    title: "一键检测结果",
+    message: lines.join("\n"),
+    confirmButtonText: "我知道了",
+    messageAlign: "left",
+  });
+}
+
 async function showLocationDiagnostics() {
   const lines = [];
   const secure = typeof window !== "undefined" ? Boolean(window.isSecureContext) : false;
@@ -350,6 +472,7 @@ onUnmounted(() => {
               </template>
             </van-cell>
             <van-button type="primary" plain block @click="requestLocationPermission">申请定位权限</van-button>
+            <van-button type="success" plain block @click="runAllInOneDiagnostics">一键检测（权限/API）</van-button>
             <van-button type="default" plain block @click="showLocationDiagnostics">定位诊断</van-button>
             <van-button class="more-logout" type="danger" block round @click="logout">退出登录</van-button>
           </div>

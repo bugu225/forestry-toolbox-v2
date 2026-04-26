@@ -969,7 +969,9 @@ onUnmounted(() => {
         </div>
         <div class="map-stage">
           <div ref="amapDivRef" class="amap-box" />
-          <van-button class="recenter-btn" size="small" round type="primary" @click="centerMapToCurrentPosition">⊕</van-button>
+        </div>
+        <div class="recenter-row">
+          <van-button class="recenter-btn" size="small" round type="primary" @click="centerMapToCurrentPosition">定位到我</van-button>
         </div>
         <div class="map-tool-row">
           <van-button size="small" plain type="primary" @click="fitMapToTrack">显示轨迹</van-button>
@@ -1157,18 +1159,19 @@ onUnmounted(() => {
 
 .map-stage {
   position: relative;
-  isolation: isolate;
+}
+
+.recenter-row {
+  display: flex;
+  justify-content: flex-end;
+  margin: 8px 0 10px;
 }
 
 .recenter-btn {
-  position: absolute;
-  right: 10px;
-  top: 10px;
-  min-width: 34px;
+  min-width: 72px;
   height: 34px;
-  padding: 0;
+  padding: 0 12px;
   font-weight: 600;
-  z-index: 20;
 }
 
 .compact-actions {
