@@ -74,13 +74,16 @@ async function onPhotoPick(ev) {
     :show="show"
     position="bottom"
     round
-    :style="{ padding: '16px' }"
+    teleport="body"
+    class="patrol-event-sheet-popup"
+    :style="{ padding: '0' }"
     @update:show="(v) => emit('update:show', v)"
   >
+    <div class="event-sheet-scroll">
     <h3 class="sheet-title">记录事件</h3>
     <van-radio-group
       :model-value="eventType"
-      direction="horizontal"
+      direction="vertical"
       class="type-row"
       @update:model-value="(v) => emit('update:eventType', v)"
     >
@@ -99,13 +102,21 @@ async function onPhotoPick(ev) {
     />
     <div class="uploader-wrap">
       <span class="ul-label">现场照片（可选）</span>
-      <input ref="photoInputRef" type="file" accept="image/*" class="hidden-file" @change="onPhotoPick" />
+      <input
+        ref="photoInputRef"
+        type="file"
+        accept="image/*"
+        capture="environment"
+        class="hidden-file"
+        @change="onPhotoPick"
+      />
       <van-button size="small" type="primary" plain @click="triggerPhotoPick">选择照片</van-button>
       <img v-if="eventPhotoDataUrl" :src="eventPhotoDataUrl" alt="预览" class="photo-preview" />
     </div>
     <div class="sheet-actions">
       <van-button block type="default" @click="emit('update:show', false)">取消</van-button>
       <van-button block type="primary" :loading="saving" @click="emit('save')">保存</van-button>
+    </div>
     </div>
   </van-popup>
 </template>
@@ -115,6 +126,15 @@ async function onPhotoPick(ev) {
   margin: 0 0 12px;
   font-size: 16px;
   text-align: center;
+}
+
+.event-sheet-scroll {
+  max-height: min(88vh, 620px);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 16px;
+  padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  box-sizing: border-box;
 }
 
 .type-row {

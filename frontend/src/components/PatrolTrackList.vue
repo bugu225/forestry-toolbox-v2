@@ -12,7 +12,7 @@ const props = defineProps({
     <van-empty
       v-if="!points.length"
       image="search"
-      description="尚无采样点（开始后立即采样，后续按移动状态自动调整频率）"
+      description="尚无采样点（巡护中在内存累计，结束巡护后整条轨迹写入本机）"
     />
     <van-cell
       v-for="p in points.slice(-6).reverse()"

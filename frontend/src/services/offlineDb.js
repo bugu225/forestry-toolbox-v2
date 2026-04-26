@@ -123,6 +123,41 @@ export async function deleteRecord(storeName, key) {
   await txPromise(tx);
 }
 
+/** 删除某巡护任务下旧版「逐点」轨迹（新版轨迹在 patrol_tasks.track_points） */
+export async function deletePatrolPointsForTask(taskLocalId) {
+  if (!taskLocalId) return;
+  const db = await openDb();
+  if (!db.objectStoreNames.contains(STORE_PATROL_POINTS)) return;
+  const tx = db.transaction(STORE_PATROL_POINTS, "readwrite");
+  const store = tx.objectStore(STORE_PATROL_POINTS);
+  if (!store.indexNames.contains("by_task")) {
+    const all = await new Promise((resolve, reject) => {
+      const r = store.getAll();
+      r.onsuccess = () => resolve(r.result || []);
+      r.onerror = () => reject(r.error);
+    });
+    for (const p of all.filter((row) => row?.task_local_id === taskLocalId)) {
+      if (p?.local_id) store.delete(p.local_id);
+    }
+    await txPromise(tx);
+    return;
+  }
+  const idx = store.index("by_task");
+  const range = IDBKeyRange.only(taskLocalId);
+  await new Promise((resolve, reject) => {
+    const req = idx.openCursor(range);
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (cursor) {
+        cursor.delete();
+        cursor.continue();
+      } else resolve();
+    };
+    req.onerror = () => reject(req.error);
+  });
+  await txPromise(tx);
+}
+
 export const stores = {
   qaSessions: STORE_QA_SESSIONS,
   qaMessages: STORE_QA_MESSAGES,

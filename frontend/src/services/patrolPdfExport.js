@@ -13,10 +13,13 @@ function drawMiniMapDataUrl(points, events, eventTypeColor, width = 1000, height
   ctx.fillStyle = "#f7f8fa";
   ctx.fillRect(0, 0, width, height);
   const pts = (points || []).filter(isValidLngLat);
-  if (!pts.length) return canvas.toDataURL("image/jpeg", 0.9);
+  const evPts = (events || []).filter(isValidLngLat);
+  /** 无轨迹点时仍按事件坐标取景，避免只有事件时缩略图为空 */
+  const boundsPts = pts.length ? pts : evPts;
+  if (!boundsPts.length) return canvas.toDataURL("image/jpeg", 0.9);
 
-  const lngs = pts.map((p) => Number(p.lng));
-  const lats = pts.map((p) => Number(p.lat));
+  const lngs = boundsPts.map((p) => Number(p.lng));
+  const lats = boundsPts.map((p) => Number(p.lat));
   const minLng = Math.min(...lngs);
   const maxLng = Math.max(...lngs);
   const minLat = Math.min(...lats);
@@ -30,15 +33,17 @@ function drawMiniMapDataUrl(points, events, eventTypeColor, width = 1000, height
     return [x, y];
   };
 
-  ctx.strokeStyle = "#1989fa";
-  ctx.lineWidth = 4;
-  ctx.beginPath();
-  pts.forEach((p, i) => {
-    const [x, y] = toXY(p);
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  });
-  ctx.stroke();
+  if (pts.length >= 2) {
+    ctx.strokeStyle = "#1989fa";
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    pts.forEach((p, i) => {
+      const [x, y] = toXY(p);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  }
 
   for (const ev of (events || []).filter(isValidLngLat)) {
     const [x, y] = toXY(ev);
@@ -137,7 +142,8 @@ async function buildReportImageDataUrl({
     ctx.fillRect(68, 570, 1104, 450);
   }
 
-  const selected = (events || []).filter((ev) => (keyEventIds || []).includes(ev.local_id));
+  const keySet = new Set((keyEventIds || []).map((id) => String(id)));
+  const selected = (events || []).filter((ev) => keySet.has(String(ev.local_id)));
   const keyEvents = selected.length ? selected : (events || []).slice(0, 3);
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(44, 1076, 1152, 820);

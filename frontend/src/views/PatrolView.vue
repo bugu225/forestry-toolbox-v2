@@ -8,18 +8,23 @@ import PatrolEventList from "../components/PatrolEventList.vue";
 import PatrolTrackList from "../components/PatrolTrackList.vue";
 import { loadTianditu } from "../services/tiandituLoader";
 import { exportPatrolPdfReport } from "../services/patrolPdfExport";
-import { deleteRecord, getAllRecords, putRecord, stores } from "../services/offlineDb";
-import { describeGeoError, getCurrentPositionCompat } from "../utils/geolocation";
+import { deletePatrolPointsForTask, deleteRecord, getAllRecords, putRecord, stores } from "../services/offlineDb";
+import { describeGeoError, getCurrentPositionCompat, getHighAccuracySnapshot } from "../utils/geolocation";
 
 const networkStore = useNetworkStore();
 const { effectiveOnline } = storeToRefs(networkStore);
 
-const SAMPLE_INTERVAL_MS = 15 * 1000;
+/** 入库轨迹点间隔：偏短以跟紧真实路径（耗电由系统/浏览器侧承担） */
+const SAMPLE_INTERVAL_MS = 2 * 1000;
+/** watchPosition 实时轨迹点（内存），与已入库折线叠加显示 */
+const LIVE_TRAIL_MAX = 280;
+/** 仅用于质量分级展示；不再因精度差而丢弃轨迹点 */
 const ACCEPTABLE_ACCURACY_M = 100;
 const GOOD_ACCURACY_M = 50;
-const JUMP_CHECK_WINDOW_MS = 60 * 1000;
-const JUMP_DISTANCE_M = 200;
-const JUMP_SPEED_MPS = 12;
+/** 仅过滤明显飞点，避免误伤真实快速移动 */
+const JUMP_CHECK_WINDOW_MS = 90 * 1000;
+const JUMP_DISTANCE_M = 900;
+const JUMP_SPEED_MPS = 55;
 const PLAYBACK_STEP_MS = 800;
 
 const EVENT_TYPES = [
@@ -53,6 +58,9 @@ function eventTypeColor(value) {
 function locationSourceLabel(source) {
   if (source === "track_point") return "轨迹点回填";
   if (source === "gps_live") return "实时定位";
+  if (source === "gps_watch") return "持续 watch";
+  if (source === "gps_sample") return "定时高精度";
+  if (source === "gps_live_event") return "事件定位";
   return "未知来源";
 }
 
@@ -144,8 +152,17 @@ let polylineInst = null;
 const eventMarkers = [];
 let playbackMarker = null;
 let currentPosMarker = null;
+/** watch 实时段：一条折线（避免上百个 Marker 卡顿） */
+let livePolylineInst = null;
 let playbackTimer = null;
 const latestDeviceCoord = ref(null);
+/** 仅由 watchPosition 写入，用于地图实时绿点 */
+const liveTrailCoords = ref([]);
+let liveWatchId = null;
+/** 避免每次加点都 setViewport 把用户缩放打乱；新巡护会复位 */
+let mapAutoViewportDone = false;
+/** watch 回调合并到每帧最多重绘一次实时层 */
+let liveOverlayRaf = 0;
 
 const playbackIndex = ref(0);
 const playbackPlaying = ref(false);
@@ -198,7 +215,19 @@ function clearMapOverlays() {
     polylineInst = null;
   }
   for (const m of eventMarkers.splice(0)) {
-    mapInst.removeOverLay(m);
+    try {
+      mapInst.removeOverLay(m);
+    } catch {
+      /* ignore */
+    }
+  }
+  if (livePolylineInst) {
+    try {
+      mapInst.removeOverLay(livePolylineInst);
+    } catch {
+      /* ignore */
+    }
+    livePolylineInst = null;
   }
   if (playbackMarker) {
     mapInst.removeOverLay(playbackMarker);
@@ -211,6 +240,7 @@ function clearMapOverlays() {
 }
 
 function destroyMap() {
+  cancelLiveOverlayPaint();
   stopPlayback();
   clearMapOverlays();
   if (mapInst) {
@@ -236,37 +266,165 @@ function dotIconDataUrl(hex) {
 
 function makeEventMarker(ev) {
   const lnglat = toTLngLat(ev);
+  let mk = null;
   try {
-    if (TMapCtor.Icon && TMapCtor.Point) {
+    mk = new TMapCtor.Marker(lnglat);
+  } catch {
+    try {
+      mk = new TMapCtor.Marker({ lnglat });
+    } catch {
+      return null;
+    }
+  }
+  try {
+    if (TMapCtor.Icon && TMapCtor.Point && typeof mk.setIcon === "function") {
       const icon = new TMapCtor.Icon({
         iconUrl: dotIconDataUrl(eventTypeColor(ev.type)),
         iconSize: new TMapCtor.Point(26, 26),
         iconAnchor: new TMapCtor.Point(13, 13),
       });
-      return new TMapCtor.Marker(lnglat, { icon });
+      mk.setIcon(icon);
     }
   } catch {
-    /* fall through */
+    /* 保留默认图钉 */
   }
-  return new TMapCtor.Marker(lnglat);
+  return mk;
+}
+
+/** 仅重绘实时 watch 折线 + 当前位置蓝点，不碰已入库折线与事件层 */
+function paintLiveOverlays() {
+  if (!mapInst || !TMapCtor) return;
+  if (livePolylineInst) {
+    try {
+      mapInst.removeOverLay(livePolylineInst);
+    } catch {
+      /* ignore */
+    }
+    livePolylineInst = null;
+  }
+  if (currentPosMarker) {
+    try {
+      mapInst.removeOverLay(currentPosMarker);
+    } catch {
+      /* ignore */
+    }
+    currentPosMarker = null;
+  }
+  const trail = liveTrailCoords.value.filter(isValidLngLat);
+  if (trail.length >= 2) {
+    const path = trail.map((p) => new TMapCtor.LngLat(Number(p.lng), Number(p.lat)));
+    const lineOpts = { color: "#1890ff", weight: 4, opacity: 0.9, lineStyle: "dashed" };
+    try {
+      livePolylineInst = new TMapCtor.Polyline(path, lineOpts);
+      mapInst.addOverLay(livePolylineInst);
+    } catch {
+      try {
+        livePolylineInst = new TMapCtor.Polyline(path, { color: "#1890ff", weight: 4, opacity: 0.9 });
+        mapInst.addOverLay(livePolylineInst);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  const selfPos = latestDeviceCoord.value;
+  const pathArr = orderedPoints.value;
+  if (isValidLngLat(selfPos)) {
+    currentPosMarker = makeCurrentPosMarker(selfPos);
+    if (currentPosMarker) {
+      currentPosMarker.setTitle("实时位置（高精度 watch）");
+      mapInst.addOverLay(currentPosMarker);
+    }
+  } else if (pathArr.length) {
+    const lastPoint = pathArr[pathArr.length - 1];
+    currentPosMarker = makeCurrentPosMarker(lastPoint, { fallback: true });
+    if (currentPosMarker) {
+      currentPosMarker.setTitle("我的当前位置（最近轨迹点）");
+      mapInst.addOverLay(currentPosMarker);
+    }
+  }
+}
+
+function schedulePaintLiveOverlays() {
+  if (!mapInst || !TMapCtor) return;
+  if (liveOverlayRaf) return;
+  liveOverlayRaf = requestAnimationFrame(() => {
+    liveOverlayRaf = 0;
+    paintLiveOverlays();
+  });
+}
+
+function cancelLiveOverlayPaint() {
+  if (liveOverlayRaf) {
+    cancelAnimationFrame(liveOverlayRaf);
+    liveOverlayRaf = 0;
+  }
+}
+
+function stopLivePositionWatch() {
+  if (liveWatchId == null) return;
+  try {
+    navigator.geolocation.clearWatch(liveWatchId);
+  } catch {
+    /* ignore */
+  }
+  liveWatchId = null;
+}
+
+function startLivePositionWatch() {
+  stopLivePositionWatch();
+  if (!activeTask.value || typeof navigator === "undefined" || !navigator.geolocation) return;
+  const opts = { enableHighAccuracy: true, maximumAge: 0, timeout: 900000 };
+  liveWatchId = navigator.geolocation.watchPosition(
+    (pos) => {
+      if (!activeTask.value) return;
+      const lat = Number(pos?.coords?.latitude);
+      const lng = Number(pos?.coords?.longitude);
+      if (!isValidLngLat({ lat, lng })) return;
+      const accuracy = Number(pos?.coords?.accuracy || 0);
+      latestDeviceCoord.value = {
+        lat,
+        lng,
+        accuracy,
+        source: "gps_watch",
+        captured_at: Date.now(),
+      };
+      const arr = [...liveTrailCoords.value, { lat, lng }];
+      liveTrailCoords.value = arr.length > LIVE_TRAIL_MAX ? arr.slice(-LIVE_TRAIL_MAX) : arr;
+      schedulePaintLiveOverlays();
+    },
+    () => {
+      /* 定时 getHighAccuracySnapshot 仍会入库兜底 */
+    },
+    opts
+  );
 }
 
 function makeCurrentPosMarker(row, opts = {}) {
   const lnglat = toTLngLat(row);
   const color = opts.fallback ? "#969799" : "#1989fa";
+  let mk = null;
   try {
-    if (TMapCtor.Icon && TMapCtor.Point) {
+    mk = new TMapCtor.Marker(lnglat);
+  } catch {
+    try {
+      mk = new TMapCtor.Marker({ lnglat });
+    } catch {
+      return null;
+    }
+  }
+  try {
+    if (TMapCtor.Icon && TMapCtor.Point && typeof mk.setIcon === "function") {
       const icon = new TMapCtor.Icon({
         iconUrl: dotIconDataUrl(color),
         iconSize: new TMapCtor.Point(30, 30),
         iconAnchor: new TMapCtor.Point(15, 15),
       });
-      return new TMapCtor.Marker(lnglat, { icon });
+      mk.setIcon(icon);
     }
   } catch {
-    /* fall through */
+    /* 默认图钉 */
   }
-  return new TMapCtor.Marker(lnglat);
+  return mk;
 }
 
 function redrawMapLayers() {
@@ -278,24 +436,30 @@ function redrawMapLayers() {
   if (path.length >= 2) {
     polylineInst = new TMapCtor.Polyline(path, {
       color: "#07c160",
-      weight: 6,
-      opacity: 0.92,
+      weight: 7,
+      opacity: 0.95,
       lineStyle: "solid",
     });
     mapInst.addOverLay(polylineInst);
-    if (typeof mapInst.setViewport === "function") {
+    if (!mapAutoViewportDone && typeof mapInst.setViewport === "function") {
       mapInst.setViewport(path);
+      mapAutoViewportDone = true;
     }
-  } else if (path.length === 1) {
-    mapInst.centerAndZoom(path[0], 16);
+  } else if (path.length === 1 && !mapAutoViewportDone) {
+    mapInst.centerAndZoom(path[0], 17);
   }
 
   for (const ev of events.value) {
     if (!isValidLngLat(ev)) continue;
     const mk = makeEventMarker(ev);
-    mk.setTitle(`${eventTypeLabel(ev.type)} ${ev.note || ""}`.trim());
-    mapInst.addOverLay(mk);
-    eventMarkers.push(mk);
+    if (!mk) continue;
+    try {
+      mk.setTitle(`${eventTypeLabel(ev.type)} ${ev.note || ""}`.trim());
+      mapInst.addOverLay(mk);
+      eventMarkers.push(mk);
+    } catch {
+      /* ignore */
+    }
   }
 
   const idx = playbackIndex.value;
@@ -307,24 +471,16 @@ function redrawMapLayers() {
     if (playbackPlaying.value) mapInst.panTo(pos);
   }
 
-  const selfPos = latestDeviceCoord.value;
-  if (isValidLngLat(selfPos)) {
-    currentPosMarker = makeCurrentPosMarker(selfPos);
-    currentPosMarker.setTitle("我的当前位置（GPS）");
-    mapInst.addOverLay(currentPosMarker);
-  } else if (path.length) {
-    const lastPoint = pathArr[pathArr.length - 1];
-    currentPosMarker = makeCurrentPosMarker(lastPoint, { fallback: true });
-    currentPosMarker.setTitle("我的当前位置（最近轨迹点）");
-    mapInst.addOverLay(currentPosMarker);
-  }
+  paintLiveOverlays();
 }
 
 async function initAmapIfNeeded() {
   mapError.value = "";
   if (!effectiveOnline.value) {
-    mapError.value = "当前离线：可继续定位并记录轨迹/事件，联网后自动恢复地图显示。";
-    destroyMap();
+    mapError.value =
+      mapInst && TMapCtor
+        ? "当前离线：底图瓦片可能无法更新，地图实例已保留；定位与轨迹/事件记录照常。"
+        : "当前离线：可继续定位并记录轨迹/事件，联网后自动加载地图。";
     return;
   }
   if (mapInst) {
@@ -392,8 +548,10 @@ watch(effectiveOnline, (online) => {
     void initAmapIfNeeded();
     return;
   }
-  mapError.value = "当前离线：可继续定位并记录轨迹/事件，联网后自动恢复地图显示。";
-  destroyMap();
+  mapError.value =
+    mapInst && TMapCtor
+      ? "当前离线：底图可能暂停刷新，地图不销毁；恢复网络后瓦片会继续加载。"
+      : "当前离线：可继续定位并记录轨迹/事件，联网后自动加载地图。";
 });
 
 function centerMapToCurrentPosition() {
@@ -417,14 +575,17 @@ function centerMapToCurrentPosition() {
 }
 
 function fitMapToTrack() {
-  if (!mapInst || !TMapCtor) return;
+  if (!mapInst || !TMapCtor) {
+    showToast("地图尚未就绪");
+    return;
+  }
   const path = orderedPoints.value.map((p) => toTLngLat(p));
   if (!path.length) {
     showToast("暂无轨迹点");
     return;
   }
   if (path.length === 1) {
-    mapInst.centerAndZoom(path[0], 16);
+    mapInst.centerAndZoom(path[0], 17);
     return;
   }
   if (typeof mapInst.setViewport === "function") {
@@ -437,17 +598,32 @@ function focusEventOnMap(ev) {
     showToast("该事件缺少有效坐标");
     return;
   }
-  if (!mapInst) {
+  if (!mapInst || !TMapCtor) {
     showToast("地图尚未加载完成");
     return;
   }
   const pos = toTLngLat(ev);
   mapInst.panTo(pos);
   if (typeof mapInst.centerAndZoom === "function") {
-    mapInst.centerAndZoom(pos, 16);
+    mapInst.centerAndZoom(pos, 17);
   }
   selectedEventDetail.value = ev;
   showEventDetailPopup.value = true;
+}
+
+/** 详情浮窗内「地图定位」：关浮窗后仅移动地图，避免再次弹出详情 */
+function refocusSelectedEventOnMap() {
+  const ev = selectedEventDetail.value;
+  if (!ev || !isValidLngLat(ev)) return;
+  showEventDetailPopup.value = false;
+  void nextTick(() => {
+    if (!mapInst || !TMapCtor) return;
+    const pos = toTLngLat(ev);
+    mapInst.panTo(pos);
+    if (typeof mapInst.centerAndZoom === "function") {
+      mapInst.centerAndZoom(pos, 17);
+    }
+  });
 }
 
 function stopPlayback() {
@@ -482,12 +658,27 @@ function togglePlayback() {
 }
 
 async function loadPointsAndEvents(taskId) {
-  const [allP, allE] = await Promise.all([
-    getAllRecords(stores.patrolPoints),
+  const [allTasks, allE] = await Promise.all([
+    getAllRecords(stores.patrolTasks),
     getAllRecords(stores.patrolEvents),
   ]);
-  points.value = allP.filter((p) => p.task_local_id === taskId).sort((a, b) => a.recorded_at - b.recorded_at);
-  events.value = allE.filter((e) => e.task_local_id === taskId).sort((a, b) => b.recorded_at - a.recorded_at);
+  const task = allTasks.find((t) => t.local_id === taskId);
+  events.value = allE
+    .filter((e) => e.task_local_id === taskId)
+    .sort((a, b) => b.recorded_at - a.recorded_at);
+
+  let pts = [];
+  if (task && Array.isArray(task.track_points) && task.track_points.length > 0) {
+    pts = [...task.track_points];
+  } else {
+    const allP = await getAllRecords(stores.patrolPoints);
+    pts = allP.filter((p) => p.task_local_id === taskId);
+  }
+  const sortPts = (arr) => [...arr].sort((a, b) => (a.recorded_at || 0) - (b.recorded_at || 0));
+  if (task?.status === "active" && pts.length === 0) {
+    return;
+  }
+  points.value = sortPts(pts);
 }
 
 function clearSamplingTimer() {
@@ -512,7 +703,7 @@ function scheduleNextSample(delayMs) {
     await recordSamplePoint();
     if (!activeTask.value) return;
     scheduleNextSample(SAMPLE_INTERVAL_MS);
-  }, Math.max(1000, Number(delayMs) || SAMPLE_INTERVAL_MS));
+  }, Math.max(400, Number(delayMs) || SAMPLE_INTERVAL_MS));
 }
 
 async function resolvePositionOnce() {
@@ -520,7 +711,21 @@ async function resolvePositionOnce() {
   latestDeviceCoord.value = {
     lat: Number(pos?.coords?.latitude),
     lng: Number(pos?.coords?.longitude),
+    accuracy: Number(pos?.coords?.accuracy || 0),
     source: "gps",
+    captured_at: Date.now(),
+  };
+  return pos;
+}
+
+async function resolvePositionForSampling() {
+  const pos = await getHighAccuracySnapshot();
+  latestDeviceCoord.value = {
+    lat: Number(pos?.coords?.latitude),
+    lng: Number(pos?.coords?.longitude),
+    accuracy: Number(pos?.coords?.accuracy || 0),
+    source: "gps_sample",
+    captured_at: Date.now(),
   };
   return pos;
 }
@@ -531,17 +736,13 @@ async function recordSamplePoint() {
   const taskId = activeTask.value.local_id;
   sampleBusy.value = true;
   try {
-    const pos = await resolvePositionOnce();
+    const pos = await resolvePositionForSampling();
     if (!activeTask.value || activeTask.value.local_id !== taskId) return false;
     const lat = Number(pos.coords.latitude);
     const lng = Number(pos.coords.longitude);
     const acc = Number(pos.coords.accuracy || 0);
     if (!isValidLngLat({ lat, lng })) {
       notifySamplingIssue("定位坐标无效，轨迹点未记录");
-      return false;
-    }
-    if (Number.isFinite(acc) && acc > ACCEPTABLE_ACCURACY_M) {
-      notifySamplingIssue("当前定位精度较差，已跳过本次采样");
       return false;
     }
     const prev = orderedPoints.value.length ? orderedPoints.value[orderedPoints.value.length - 1] : null;
@@ -565,7 +766,6 @@ async function recordSamplePoint() {
       recorded_at: Date.now(),
     };
     if (!activeTask.value || activeTask.value.local_id !== taskId) return false;
-    await putRecord(stores.patrolPoints, rec);
     points.value = [...points.value, rec].sort((a, b) => a.recorded_at - b.recorded_at);
     lastSampleAt.value = rec.recorded_at;
     return true;
@@ -612,6 +812,9 @@ async function startPatrol() {
   points.value = [];
   events.value = [];
   lastSampleAt.value = 0;
+  liveTrailCoords.value = [];
+  stopLivePositionWatch();
+  mapAutoViewportDone = false;
 
   gpsBusy.value = true;
   try {
@@ -635,7 +838,9 @@ async function startPatrol() {
   };
   await putRecord(stores.patrolTasks, task);
   activeTask.value = task;
-  showSuccessToast("已开始巡护：移动时高频采样，静止时低频省电");
+  liveTrailCoords.value = [];
+  startLivePositionWatch();
+  showSuccessToast("已开始巡护：定时采样在内存中累计，结束本次巡护时一次性写入整条轨迹；watch 持续对齐地图");
   startSamplingLoop(true);
 }
 
@@ -647,15 +852,21 @@ async function stopPatrol() {
     return;
   }
   clearSamplingTimer();
+  stopLivePositionWatch();
+  liveTrailCoords.value = [];
+  const taskId = activeTask.value.local_id;
+  const trackSnapshot = [...orderedPoints.value];
   const ended = {
     ...activeTask.value,
     ended_at: Date.now(),
     status: "ended",
+    track_points: trackSnapshot,
   };
   await putRecord(stores.patrolTasks, ended);
+  await deletePatrolPointsForTask(taskId);
   endedTaskView.value = ended;
   activeTask.value = null;
-  showSuccessToast("巡护已结束，数据已保存在本机");
+  showSuccessToast("巡护已结束，整条轨迹与事件已保存在本机");
 }
 
 async function restoreActivePatrol() {
@@ -665,11 +876,13 @@ async function restoreActivePatrol() {
     .sort((a, b) => (b.started_at || 0) - (a.started_at || 0))[0];
   if (active) {
     activeTask.value = active;
+    mapAutoViewportDone = false;
     await loadPointsAndEvents(active.local_id);
     const latest = [...points.value].sort((a, b) => (b.recorded_at || 0) - (a.recorded_at || 0))[0];
     lastSampleAt.value = Number(latest?.recorded_at || 0);
+    startLivePositionWatch();
     startSamplingLoop(false);
-    showToast("已恢复进行中的巡护");
+    showToast("已恢复进行中的巡护（未结束前轨迹仅在本页内存，刷新会丢失）");
   }
 }
 
@@ -691,15 +904,43 @@ function coordinatesFromLastPointOrNull() {
   };
 }
 
+function freshDeviceCoordForEventOrNull() {
+  const w = latestDeviceCoord.value;
+  if (!w || !isValidLngLat(w)) return null;
+  const age = Date.now() - Number(w.captured_at || 0);
+  if (age > 15000) return null;
+  if (w.source !== "gps_watch" && w.source !== "gps_sample") return null;
+  return {
+    lat: Number(w.lat),
+    lng: Number(w.lng),
+    accuracy: Number(w.accuracy || 0),
+    source: w.source === "gps_watch" ? "gps_watch" : "gps_sample",
+  };
+}
+
 async function resolveCoordsForEvent() {
+  const fresh = freshDeviceCoordForEventOrNull();
+  if (fresh) return fresh;
+  try {
+    const pos = await getHighAccuracySnapshot();
+    const lat = Number(pos.coords.latitude);
+    const lng = Number(pos.coords.longitude);
+    const accuracy = Number(pos.coords.accuracy || 0);
+    if (!isValidLngLat({ lat, lng })) throw new Error("bad_coord");
+    latestDeviceCoord.value = {
+      lat,
+      lng,
+      accuracy,
+      source: "gps_live_event",
+      captured_at: Date.now(),
+    };
+    return { lat, lng, accuracy, source: "gps_live" };
+  } catch {
+    /* fall through */
+  }
   const fromPoint = coordinatesFromLastPointOrNull();
   if (fromPoint) return fromPoint;
-  const pos = await resolvePositionOnce();
-  const lat = Number(pos.coords.latitude);
-  const lng = Number(pos.coords.longitude);
-  const accuracy = Number(pos.coords.accuracy || 0);
-  if (!isValidLngLat({ lat, lng })) throw new Error("bad_coord");
-  return { lat, lng, accuracy, source: "gps_live" };
+  throw new Error("bad_coord");
 }
 
 async function persistPatrolEvent({ lat, lng, type, note, photo, accuracy, source }) {
@@ -719,6 +960,8 @@ async function persistPatrolEvent({ lat, lng, type, note, photo, accuracy, sourc
   };
   await putRecord(stores.patrolEvents, rec);
   await loadPointsAndEvents(activeTask.value.local_id);
+  await nextTick();
+  if (mapInst && TMapCtor) redrawMapLayers();
   return rec;
 }
 
@@ -746,12 +989,12 @@ async function onQuickEventSelect(action) {
       accuracy,
       source,
     });
-    if (mapInst && rec) {
+    if (mapInst && TMapCtor && rec) {
       mapInst.panTo(toTLngLat(rec));
     }
     showSuccessToast("已保存事件");
   } catch {
-    showFailToast("未取得坐标：请等待轨迹采样后重试，或使用「记录事件」");
+    showFailToast("未取得坐标：请稍等定位或走几步再试，也可用「记录事件」");
   } finally {
     eventSaveBusy.value = false;
   }
@@ -782,13 +1025,13 @@ async function saveEvent() {
       accuracy,
       source,
     });
-    if (mapInst && rec) {
+    if (mapInst && TMapCtor && rec) {
       mapInst.panTo(toTLngLat(rec));
     }
     showEventSheet.value = false;
     showSuccessToast("事件已保存");
   } catch {
-    showFailToast("无法获取有效位置，事件未保存（可先走几步产生轨迹点再试）");
+    showFailToast("无法获取有效位置，事件未保存（可稍等定位或走几步再试）");
   } finally {
     eventSaveBusy.value = false;
   }
@@ -799,11 +1042,12 @@ async function captureMapSnapshotOrNull() {
   if (!el) return null;
   try {
     const { default: html2canvas } = await import("html2canvas");
+    const dpr = typeof window !== "undefined" ? Math.min(2, window.devicePixelRatio || 1) : 1;
     const canvas = await html2canvas(el, {
       useCORS: true,
       allowTaint: true,
       backgroundColor: "#f7f8fa",
-      scale: 1,
+      scale: dpr,
       logging: false,
     });
     return canvas.toDataURL("image/jpeg", 0.9);
@@ -821,7 +1065,7 @@ function resetPdfFormDefaults() {
     patrolDate: `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}`,
     areaText: "",
     generateTime: `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}T${p(now.getHours())}:${p(now.getMinutes())}`,
-    keyEventIds: events.value.slice(0, 3).map((e) => e.local_id),
+    keyEventIds: events.value.slice(0, 3).map((e) => String(e.local_id)),
   };
 }
 
@@ -853,7 +1097,7 @@ async function exportPatrolPdf() {
         generateTimeText,
       },
       mapDataUrlPreferred: mapSnapshot,
-      keyEventIds: pdfForm.value.keyEventIds || [],
+      keyEventIds: (pdfForm.value.keyEventIds || []).map((id) => String(id)),
       eventTypeLabel,
       eventTypeColor,
       formatTime,
@@ -897,6 +1141,7 @@ onMounted(async () => {
 onUnmounted(() => {
   clearSamplingTimer();
   stopPlayback();
+  stopLivePositionWatch();
   destroyMap();
 });
 </script>
@@ -918,13 +1163,13 @@ onUnmounted(() => {
 
       <div class="map-wrap">
         <p class="hint tight">
-          轨迹与事件坐标均保存在本机；离线可持续记录，联网后自动加载地图查看事件点与轨迹。
+          事件随时写入本机；轨迹在「结束巡护」时整条写入任务记录。巡护进行中轨迹仅存本页内存，刷新会丢失。
         </p>
         <div class="stats-chip">{{ patrolStatsText }}</div>
         <div v-if="mapError" class="map-fallback">
           <p>{{ mapError }}</p>
           <p v-if="mapError.includes('离线')" class="sub">
-            巡护采样与事件记录不受影响，数据先保存在本机，恢复网络后可继续地图浏览。
+            事件照常写入本机；轨迹仍在内存中累计，结束巡护后写入。恢复网络后可继续看地图。
           </p>
           <p v-else-if="mapError.includes('超时') || mapError.includes('脚本')" class="sub">
             请检查网络、天地图控制台域名白名单与 Key 配置。
@@ -955,8 +1200,14 @@ onUnmounted(() => {
           bar-height="4px"
           active-color="#07c160"
         />
+        <div class="map-legend map-legend-lines">
+          <span class="legend-title">图层</span>
+          <span class="legend-item"><span class="legend-line solid" />已记录轨迹</span>
+          <span class="legend-item"><span class="legend-line dash" />实时 watch</span>
+          <span class="legend-item"><span class="legend-dot blue" />当前位置</span>
+        </div>
         <div class="map-legend">
-          <span class="legend-title">图例</span>
+          <span class="legend-title">事件</span>
           <span v-for="t in EVENT_TYPES" :key="`legend_${t.value}`" class="legend-item">
             <span class="legend-dot" :style="{ backgroundColor: t.color }" />
             {{ t.label }}
@@ -1011,14 +1262,16 @@ onUnmounted(() => {
     </div>
   </div>
   <van-action-sheet
-      v-model:show="quickEventSheetVisible"
-      title="一键记录异常"
-      description="优先使用最近轨迹点坐标；若无轨迹点则尝试实时定位。"
-      :actions="EVENT_TYPES.map((t) => ({ name: t.label, value: t.value, color: t.color }))"
-      close-on-click-action
-      cancel-text="取消"
-      @select="onQuickEventSelect"
-    />
+    v-model:show="quickEventSheetVisible"
+    teleport="body"
+    title="一键记录异常"
+    description="优先用地图上实时位置；否则按高精度定位或最近轨迹点。"
+    :actions="EVENT_TYPES.map((t) => ({ name: t.label, value: t.value, color: t.color }))"
+    close-on-click-action
+    cancel-text="取消"
+    class="patrol-action-sheet"
+    @select="onQuickEventSelect"
+  />
 
   <PatrolEventSheet
     v-model:show="showEventSheet"
@@ -1030,49 +1283,76 @@ onUnmounted(() => {
     @save="saveEvent"
   />
 
-  <van-popup v-model:show="showEventDetailPopup" position="bottom" round :style="{ padding: '16px' }">
-    <h3 class="sheet-title">{{ eventTypeLabel(selectedEventDetail?.type) }}</h3>
-    <div class="detail-lines">
-      <p>时间：{{ formatTime(selectedEventDetail?.recorded_at) }}</p>
-      <p>坐标：{{ formatCoord(selectedEventDetail?.lat) }}, {{ formatCoord(selectedEventDetail?.lng) }}</p>
-      <p>定位来源：{{ locationSourceLabel(selectedEventDetail?.source) }}</p>
-      <p>精度：{{ Number.isFinite(Number(selectedEventDetail?.accuracy)) && Number(selectedEventDetail?.accuracy) > 0 ? `约 ${Math.round(Number(selectedEventDetail?.accuracy))} m` : "—" }}</p>
-      <p>备注：{{ selectedEventDetail?.note || "—" }}</p>
-    </div>
-    <img v-if="selectedEventDetail?.photo_dataurl" :src="selectedEventDetail.photo_dataurl" alt="事件照片" class="detail-photo" />
-    <div class="detail-actions">
-      <van-button block type="primary" @click="showEventDetailPopup = false">关闭</van-button>
+  <van-popup
+    v-model:show="showEventDetailPopup"
+    position="bottom"
+    round
+    teleport="body"
+    class="patrol-popup-root"
+    :style="{ padding: '0' }"
+  >
+    <div class="patrol-popup-inner">
+      <h3 class="sheet-title">{{ eventTypeLabel(selectedEventDetail?.type) }}</h3>
+      <div class="detail-lines">
+        <p>时间：{{ formatTime(selectedEventDetail?.recorded_at) }}</p>
+        <p>坐标：{{ formatCoord(selectedEventDetail?.lat) }}, {{ formatCoord(selectedEventDetail?.lng) }}</p>
+        <p>定位来源：{{ locationSourceLabel(selectedEventDetail?.source) }}</p>
+        <p>精度：{{ Number.isFinite(Number(selectedEventDetail?.accuracy)) && Number(selectedEventDetail?.accuracy) > 0 ? `约 ${Math.round(Number(selectedEventDetail?.accuracy))} m` : "—" }}</p>
+        <p>备注：{{ selectedEventDetail?.note || "—" }}</p>
+      </div>
+      <img v-if="selectedEventDetail?.photo_dataurl" :src="selectedEventDetail.photo_dataurl" alt="事件照片" class="detail-photo" />
+      <div class="detail-actions sheet-actions">
+        <van-button block type="default" @click="showEventDetailPopup = false">关闭</van-button>
+        <van-button
+          v-if="selectedEventDetail && isValidLngLat(selectedEventDetail)"
+          block
+          type="primary"
+          plain
+          @click="refocusSelectedEventOnMap"
+        >
+          地图定位
+        </van-button>
+      </div>
     </div>
   </van-popup>
 
-  <van-popup v-model:show="showPdfConfigPopup" position="bottom" round :style="{ padding: '16px' }">
-    <h3 class="sheet-title">导出PDF设置</h3>
-    <van-field v-model="pdfForm.title" label="标题" placeholder="智能巡护简报" />
-    <van-field v-model="pdfForm.patrolUser" label="巡护员" placeholder="护林员姓名" />
-    <van-field v-model="pdfForm.patrolDate" label="日期" placeholder="YYYY-MM-DD" />
-    <van-field v-model="pdfForm.areaText" label="区域" placeholder="如：第3责任区" />
-    <div class="pdf-time-row">
-      <span class="pdf-time-label">生成时间</span>
-      <input v-model="pdfForm.generateTime" class="pdf-time-input" type="datetime-local" />
-      <van-button size="small" plain type="primary" @click="resetPdfFormDefaults">当前时间</van-button>
-    </div>
-    <div class="pdf-key-events">
-      <div class="pdf-key-title">重点事件（可多选）</div>
-      <van-checkbox-group v-model="pdfForm.keyEventIds">
-        <van-checkbox
-          v-for="ev in events.slice(0, 10)"
-          :key="ev.local_id"
-          :name="ev.local_id"
-          shape="square"
-          class="pdf-key-item"
-        >
-          {{ eventTypeLabel(ev.type) }} · {{ formatTime(ev.recorded_at) }}{{ ev.note ? ` · ${ev.note}` : "" }}
-        </van-checkbox>
-      </van-checkbox-group>
-    </div>
-    <div class="sheet-actions">
-      <van-button block type="default" @click="showPdfConfigPopup = false">取消</van-button>
-      <van-button block type="primary" :loading="exportPdfBusy" @click="exportPatrolPdf">生成并导出</van-button>
+  <van-popup
+    v-model:show="showPdfConfigPopup"
+    position="bottom"
+    round
+    teleport="body"
+    class="patrol-popup-root"
+    :style="{ padding: '0' }"
+  >
+    <div class="patrol-popup-inner">
+      <h3 class="sheet-title">导出PDF设置</h3>
+      <van-field v-model="pdfForm.title" label="标题" placeholder="智能巡护简报" />
+      <van-field v-model="pdfForm.patrolUser" label="巡护员" placeholder="护林员姓名" />
+      <van-field v-model="pdfForm.patrolDate" label="日期" placeholder="YYYY-MM-DD" />
+      <van-field v-model="pdfForm.areaText" label="区域" placeholder="如：第3责任区" />
+      <div class="pdf-time-row">
+        <span class="pdf-time-label">生成时间</span>
+        <input v-model="pdfForm.generateTime" class="pdf-time-input" type="datetime-local" />
+        <van-button size="small" plain type="primary" @click="resetPdfFormDefaults">当前时间</van-button>
+      </div>
+      <div class="pdf-key-events">
+        <div class="pdf-key-title">重点事件（可多选）</div>
+        <van-checkbox-group v-model="pdfForm.keyEventIds">
+          <van-checkbox
+            v-for="ev in events.slice(0, 10)"
+            :key="ev.local_id"
+            :name="String(ev.local_id)"
+            shape="square"
+            class="pdf-key-item"
+          >
+            {{ eventTypeLabel(ev.type) }} · {{ formatTime(ev.recorded_at) }}{{ ev.note ? ` · ${ev.note}` : "" }}
+          </van-checkbox>
+        </van-checkbox-group>
+      </div>
+      <div class="sheet-actions">
+        <van-button block type="default" @click="showPdfConfigPopup = false">取消</van-button>
+        <van-button block type="primary" :loading="exportPdfBusy" @click="exportPatrolPdf">生成并导出</van-button>
+      </div>
     </div>
   </van-popup>
 
@@ -1197,6 +1477,45 @@ onUnmounted(() => {
   width: 8px;
   height: 8px;
   border-radius: 999px;
+}
+
+.legend-dot.blue {
+  background: #1989fa;
+}
+
+.map-legend-lines {
+  margin-bottom: 6px;
+}
+
+.legend-line {
+  display: inline-block;
+  width: 22px;
+  height: 0;
+  border-top: 3px solid #07c160;
+  vertical-align: middle;
+  margin-right: 2px;
+}
+
+.legend-line.dash {
+  border-top-style: dashed;
+  border-top-color: #1890ff;
+}
+
+.legend-line.solid {
+  border-top-style: solid;
+}
+
+.patrol-popup-inner {
+  max-height: min(88vh, 640px);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 16px;
+  padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  box-sizing: border-box;
+}
+
+.detail-actions.sheet-actions {
+  margin-top: 12px;
 }
 
 .status-chip {
