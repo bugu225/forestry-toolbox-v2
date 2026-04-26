@@ -1,7 +1,8 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
-import { showConfirmDialog, showFailToast, showSuccessToast, showToast } from "vant";
+import { showConfirmDialog, showDialog, showFailToast, showSuccessToast, showToast } from "vant";
 import { storeToRefs } from "pinia";
+import { jsPDF } from "jspdf";
 import { useNetworkStore } from "../stores/network";
 import { loadTianditu } from "../services/tiandituLoader";
 import { deleteRecord, getAllRecords, putRecord, stores } from "../services/offlineDb";
@@ -18,13 +19,14 @@ const STATIONARY_DISTANCE_M = 10;
 const JUMP_CHECK_WINDOW_MS = 60 * 1000;
 const JUMP_DISTANCE_M = 200;
 const JUMP_SPEED_MPS = 12;
-const MAX_AUDIO_MS = 120000;
 const PLAYBACK_STEP_MS = 800;
 
 const EVENT_TYPES = [
   { value: "pest", label: "病虫害", color: "#722ed1" },
   { value: "fire", label: "火情", color: "#ee0a24" },
   { value: "illegal", label: "盗伐", color: "#ed6a0c" },
+  { value: "facility", label: "设施损坏", color: "#07c160" },
+  { value: "wildlife", label: "野生动物", color: "#2db7f5" },
   { value: "other", label: "其他异常", color: "#1989fa" },
 ];
 
@@ -81,7 +83,6 @@ const showEventSheet = ref(false);
 const eventType = ref("pest");
 const eventNote = ref("");
 const eventPhotoDataUrl = ref("");
-const eventAudioDataUrl = ref("");
 const photoInputRef = ref(null);
 
 /** 有效坐标、按时间排序（与地图折线/回放滑块一致） */
@@ -149,19 +150,13 @@ const latestDeviceCoord = ref(null);
 const playbackIndex = ref(0);
 const playbackPlaying = ref(false);
 
-const isRecording = ref(false);
-const recordingMime = ref("");
-let mediaRecorder = null;
-let mediaChunks = [];
-let mediaStream = null;
-let recordStopTimer = null;
-
 const quickEventSheetVisible = ref(false);
 const showEventList = ref(true);
 const showTrackList = ref(true);
 const sampleBusy = ref(false);
 const lastSampleAt = ref(0);
 let lastSamplingWarnAt = 0;
+const exportPdfBusy = ref(false);
 
 const sampleHintText = computed(() => {
   if (!activeTask.value) return "未开始采样";
@@ -449,6 +444,19 @@ function focusEventOnMap(ev) {
   if (typeof mapInst.centerAndZoom === "function") {
     mapInst.centerAndZoom(pos, 16);
   }
+  showDialog({
+    title: eventTypeLabel(ev.type),
+    message: [
+      `时间：${formatTime(ev.recorded_at)}`,
+      `坐标：${formatCoord(ev.lat)}, ${formatCoord(ev.lng)}`,
+      `定位来源：${locationSourceLabel(ev.source)}`,
+      `精度：${Number.isFinite(Number(ev.accuracy)) && Number(ev.accuracy) > 0 ? `约 ${Math.round(Number(ev.accuracy))} m` : "—"}`,
+      `照片：${ev.photo_dataurl ? "有" : "无"}`,
+      `备注：${ev.note || "—"}`,
+    ].join("\n"),
+    confirmButtonText: "知道了",
+    messageAlign: "left",
+  });
 }
 
 function stopPlayback() {
@@ -683,81 +691,6 @@ async function restoreActivePatrol() {
   }
 }
 
-function pickRecordingMime() {
-  const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
-  for (const m of candidates) {
-    if (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(m)) return m;
-  }
-  return "";
-}
-
-function stopRecordingInternal() {
-  if (recordStopTimer) {
-    clearTimeout(recordStopTimer);
-    recordStopTimer = null;
-  }
-  if (mediaRecorder && mediaRecorder.state !== "inactive") {
-    try {
-      mediaRecorder.stop();
-    } catch {
-      /* ignore */
-    }
-  }
-  if (mediaStream) {
-    for (const t of mediaStream.getTracks()) t.stop();
-    mediaStream = null;
-  }
-  mediaRecorder = null;
-  isRecording.value = false;
-}
-
-async function toggleEventRecording() {
-  if (isRecording.value) {
-    stopRecordingInternal();
-    return;
-  }
-  if (typeof MediaRecorder === "undefined" || !navigator.mediaDevices?.getUserMedia) {
-    showFailToast("当前环境不支持录音");
-    return;
-  }
-  const mime = pickRecordingMime();
-  if (!mime) {
-    showFailToast("本机不支持可用的录音格式");
-    return;
-  }
-  recordingMime.value = mime;
-  try {
-    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  } catch {
-    showFailToast("无法访问麦克风");
-    return;
-  }
-  mediaChunks = [];
-  mediaRecorder = new MediaRecorder(mediaStream, { mimeType: mime });
-  mediaRecorder.ondataavailable = (ev) => {
-    if (ev.data && ev.data.size) mediaChunks.push(ev.data);
-  };
-  mediaRecorder.onstop = () => {
-    const blob = new Blob(mediaChunks, { type: mime });
-    mediaChunks = [];
-    const reader = new FileReader();
-    reader.onload = () => {
-      eventAudioDataUrl.value = typeof reader.result === "string" ? reader.result : "";
-    };
-    reader.readAsDataURL(blob);
-    if (mediaStream) {
-      for (const t of mediaStream.getTracks()) t.stop();
-      mediaStream = null;
-    }
-  };
-  mediaRecorder.start(200);
-  isRecording.value = true;
-  recordStopTimer = setTimeout(() => {
-    showToast("已达最长录音时间，已自动停止");
-    stopRecordingInternal();
-  }, MAX_AUDIO_MS);
-}
-
 /** 25 分钟内最近一次有效轨迹点，用于定位失败时仍能记事件 */
 function coordinatesFromLastPointOrNull() {
   const sorted = [...points.value].sort((a, b) => (b.recorded_at || 0) - (a.recorded_at || 0));
@@ -787,7 +720,7 @@ async function resolveCoordsForEvent() {
   return { lat, lng, accuracy, source: "gps_live" };
 }
 
-async function persistPatrolEvent({ lat, lng, type, note, photo, audio, accuracy, source }) {
+async function persistPatrolEvent({ lat, lng, type, note, photo, accuracy, source }) {
   if (!activeTask.value) return;
   const rec = {
     local_id: uid("pevt"),
@@ -797,7 +730,6 @@ async function persistPatrolEvent({ lat, lng, type, note, photo, audio, accuracy
     lng,
     note: (note || "").trim(),
     photo_dataurl: photo || null,
-    audio_dataurl: audio || null,
     accuracy: Number(accuracy || 0),
     quality_level: classifyAccuracyLevel(accuracy),
     source: source || "unknown",
@@ -828,7 +760,6 @@ async function onQuickEventSelect(action) {
       type,
       note: "一键记录异常",
       photo: null,
-      audio: null,
       accuracy,
       source,
     });
@@ -848,34 +779,58 @@ function openEventSheet() {
   eventType.value = "pest";
   eventNote.value = "";
   eventPhotoDataUrl.value = "";
-  eventAudioDataUrl.value = "";
-  recordingMime.value = "";
-  stopRecordingInternal();
   showEventSheet.value = true;
 }
-
-watch(showEventSheet, (open) => {
-  if (!open) stopRecordingInternal();
-});
 
 function triggerPhotoPick() {
   photoInputRef.value?.click();
 }
 
-function onPhotoPick(ev) {
+function compressImageFile(file, maxSide = 1600, quality = 0.75) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("read_failed"));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("image_decode_failed"));
+      img.onload = () => {
+        const ratio = Math.min(1, maxSide / Math.max(img.width, img.height));
+        const w = Math.max(1, Math.round(img.width * ratio));
+        const h = Math.max(1, Math.round(img.height * ratio));
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          reject(new Error("canvas_failed"));
+          return;
+        }
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.src = typeof reader.result === "string" ? reader.result : "";
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+async function onPhotoPick(ev) {
   const f = ev.target?.files?.[0];
   if (!f) return;
-  const reader = new FileReader();
-  reader.onload = () => {
-    eventPhotoDataUrl.value = typeof reader.result === "string" ? reader.result : "";
-  };
-  reader.readAsDataURL(f);
+  try {
+    eventPhotoDataUrl.value = await compressImageFile(f);
+  } catch {
+    const reader = new FileReader();
+    reader.onload = () => {
+      eventPhotoDataUrl.value = typeof reader.result === "string" ? reader.result : "";
+    };
+    reader.readAsDataURL(f);
+  }
   ev.target.value = "";
 }
 
 async function saveEvent() {
   if (!activeTask.value) return;
-  stopRecordingInternal();
   eventSaveBusy.value = true;
   try {
     const { lat, lng, accuracy, source } = await resolveCoordsForEvent();
@@ -885,7 +840,6 @@ async function saveEvent() {
       type: eventType.value,
       note: (eventNote.value || "").trim(),
       photo: eventPhotoDataUrl.value || null,
-      audio: eventAudioDataUrl.value || null,
       accuracy,
       source,
     });
@@ -895,6 +849,115 @@ async function saveEvent() {
     showFailToast("无法获取有效位置，事件未保存（可先走几步产生轨迹点再试）");
   } finally {
     eventSaveBusy.value = false;
+  }
+}
+
+function drawMiniMapDataUrl(width = 1000, height = 420) {
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return "";
+  ctx.fillStyle = "#f7f8fa";
+  ctx.fillRect(0, 0, width, height);
+  const pts = orderedPoints.value.filter(isValidLngLat);
+  if (!pts.length) return canvas.toDataURL("image/jpeg", 0.9);
+  const lngs = pts.map((p) => Number(p.lng));
+  const lats = pts.map((p) => Number(p.lat));
+  const minLng = Math.min(...lngs);
+  const maxLng = Math.max(...lngs);
+  const minLat = Math.min(...lats);
+  const maxLat = Math.max(...lats);
+  const dx = Math.max(1e-9, maxLng - minLng);
+  const dy = Math.max(1e-9, maxLat - minLat);
+  const pad = 22;
+  const toXY = (row) => {
+    const x = pad + ((Number(row.lng) - minLng) / dx) * (width - pad * 2);
+    const y = height - pad - ((Number(row.lat) - minLat) / dy) * (height - pad * 2);
+    return [x, y];
+  };
+  ctx.strokeStyle = "#1989fa";
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  pts.forEach((p, i) => {
+    const [x, y] = toXY(p);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  for (const ev of events.value.filter(isValidLngLat)) {
+    const [x, y] = toXY(ev);
+    ctx.fillStyle = eventTypeColor(ev.type);
+    ctx.beginPath();
+    ctx.arc(x, y, 6, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  return canvas.toDataURL("image/jpeg", 0.9);
+}
+
+function buildEventSummaryLines(limit = 8) {
+  const rows = events.value
+    .slice(0, limit)
+    .map((ev, idx) => `${idx + 1}. ${eventTypeLabel(ev.type)} ${formatTime(ev.recorded_at)} ${ev.note ? `- ${ev.note}` : ""}`);
+  if (!rows.length) return ["无事件记录"];
+  return rows;
+}
+
+async function exportPatrolPdf() {
+  if (!points.value.length && !events.value.length) {
+    showToast("暂无可导出的巡护数据");
+    return;
+  }
+  exportPdfBusy.value = true;
+  try {
+    const pdf = new jsPDF({ unit: "mm", format: "a4" });
+    const pageW = 210;
+    let y = 14;
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(16);
+    pdf.text("巡护报告", 14, y);
+    y += 8;
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(10);
+    pdf.text(`导出时间：${formatTime(Date.now())}`, 14, y);
+    y += 6;
+    pdf.text(`巡护状态：${activeTask.value ? "进行中" : endedTaskView.value ? "已结束" : "未开始"}`, 14, y);
+    y += 6;
+    const distanceText = patrolStats.value.distanceMeters >= 1000
+      ? `${(patrolStats.value.distanceMeters / 1000).toFixed(2)} km`
+      : `${Math.round(patrolStats.value.distanceMeters)} m`;
+    pdf.text(`统计：里程 ${distanceText}，时长 ${Math.round(patrolStats.value.durationMs / 60000)} 分钟，事件 ${events.value.length} 条`, 14, y);
+    y += 8;
+    const mapDataUrl = drawMiniMapDataUrl();
+    if (mapDataUrl) {
+      pdf.setFont("helvetica", "bold");
+      pdf.text("轨迹与事件地图", 14, y);
+      y += 3;
+      pdf.addImage(mapDataUrl, "JPEG", 14, y, pageW - 28, 78);
+      y += 84;
+    }
+    pdf.setFont("helvetica", "bold");
+    pdf.text("事件摘要", 14, y);
+    y += 6;
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(10);
+    const lines = buildEventSummaryLines(12);
+    for (const line of lines) {
+      if (y > 285) {
+        pdf.addPage();
+        y = 16;
+      }
+      pdf.text(line, 14, y);
+      y += 5.6;
+    }
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, "0");
+    pdf.save(`巡护报告_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}.pdf`);
+    showSuccessToast("PDF 已导出");
+  } catch {
+    showFailToast("导出失败，请稍后重试");
+  } finally {
+    exportPdfBusy.value = false;
   }
 }
 
@@ -928,7 +991,6 @@ onMounted(async () => {
 onUnmounted(() => {
   clearSamplingTimer();
   stopPlayback();
-  stopRecordingInternal();
   destroyMap();
 });
 </script>
@@ -1001,6 +1063,16 @@ onUnmounted(() => {
         <van-button v-if="!activeTask" type="primary" block :loading="gpsBusy" @click="startPatrol">
           {{ endedTaskView ? "开始新巡护" : "开始巡护" }}
         </van-button>
+        <van-button
+          v-if="points.length || events.length || endedTaskView"
+          type="success"
+          block
+          plain
+          :loading="exportPdfBusy"
+          @click="exportPatrolPdf"
+        >
+          导出PDF巡护报告
+        </van-button>
         <template v-if="activeTask">
           <van-button type="danger" block plain @click="stopPatrol">结束巡护</van-button>
           <van-button type="warning" block plain @click="openEventSheet">标记事件</van-button>
@@ -1019,7 +1091,7 @@ onUnmounted(() => {
         <van-swipe-cell v-for="ev in events" :key="ev.local_id">
           <van-cell
             :title="`${eventTypeLabel(ev.type)}`"
-            :label="`${formatTime(ev.recorded_at)} · ${formatCoord(ev.lat)}, ${formatCoord(ev.lng)} · ${locationSourceLabel(ev.source)}${Number.isFinite(Number(ev.accuracy)) && Number(ev.accuracy) > 0 ? ' · 精度约 ' + Math.round(Number(ev.accuracy)) + ' m' : ''}${ev.note ? ' · ' + ev.note : ''}${ev.audio_dataurl ? ' · 含录音' : ''}`"
+            :label="`${formatTime(ev.recorded_at)} · ${formatCoord(ev.lat)}, ${formatCoord(ev.lng)} · ${locationSourceLabel(ev.source)}${Number.isFinite(Number(ev.accuracy)) && Number(ev.accuracy) > 0 ? ' · 精度约 ' + Math.round(Number(ev.accuracy)) + ' m' : ''}${ev.note ? ' · ' + ev.note : ''}${ev.photo_dataurl ? ' · 含照片' : ''}`"
             is-link
             @click="focusEventOnMap(ev)"
           />
@@ -1065,14 +1137,6 @@ onUnmounted(() => {
         <input ref="photoInputRef" type="file" accept="image/*" class="hidden-file" @change="onPhotoPick" />
         <van-button size="small" type="primary" plain @click="triggerPhotoPick">选择照片</van-button>
         <img v-if="eventPhotoDataUrl" :src="eventPhotoDataUrl" alt="预览" class="photo-preview" />
-      </div>
-      <div class="rec-row">
-        <span class="ul-label">现场录音（可选，最长约 {{ MAX_AUDIO_MS / 1000 }} 秒）</span>
-        <van-button size="small" :type="isRecording ? 'danger' : 'primary'" plain @click="toggleEventRecording">
-          {{ isRecording ? "停止录音" : "开始录音" }}
-        </van-button>
-        <span v-if="recordingMime" class="mime-hint">{{ recordingMime }}</span>
-        <span v-if="eventAudioDataUrl" class="ok-hint">已录制，保存事件时将一并存储</span>
       </div>
       <div class="sheet-actions">
         <van-button block type="default" @click="showEventSheet = false">取消</van-button>
@@ -1320,27 +1384,11 @@ onUnmounted(() => {
   margin: 12px 0;
 }
 
-.rec-row {
-  margin: 12px 0 16px;
-}
-
 .ul-label {
   display: block;
   font-size: 14px;
   color: #323233;
   margin-bottom: 8px;
-}
-
-.mime-hint,
-.ok-hint {
-  display: block;
-  font-size: 12px;
-  color: #969799;
-  margin-top: 6px;
-}
-
-.ok-hint {
-  color: #07c160;
 }
 
 .sheet-actions {
