@@ -14,7 +14,7 @@ import { describeGeoError, getCurrentPositionCompat, getHighAccuracySnapshot, ge
 const networkStore = useNetworkStore();
 const { effectiveOnline } = storeToRefs(networkStore);
 
-const SAMPLE_INTERVAL_MS = 2 * 1000;
+const SAMPLE_INTERVAL_MS = 10 * 1000;
 const LIVE_TRAIL_MAX = 280;
 const ACCEPTABLE_ACCURACY_M = 100;
 const GOOD_ACCURACY_M = 50;
