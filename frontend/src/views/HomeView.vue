@@ -8,7 +8,6 @@ import { useAuthStore } from "../stores/auth";
 import { useNetworkStore } from "../stores/network";
 
 const PWA_TIP_DISMISS_KEY = "ftb2_home_pwa_tip_dismissed";
-const PATROL_USE_AMAP_IP_KEY = "ftb2_patrol_use_amap_ip";
 
 const authStore = useAuthStore();
 const networkStore = useNetworkStore();
@@ -17,7 +16,6 @@ const router = useRouter();
 
 /** 默认收起「其他」区块 */
 const moreActive = ref([]);
-const useAmapIpForPatrol = ref(false);
 
 const username = computed(() => authStore.user?.username || "用户");
 
@@ -183,19 +181,6 @@ function onSimulateOfflineChange(checked) {
   });
 }
 
-function onUseAmapIpForPatrolChange(checked) {
-  useAmapIpForPatrol.value = checked;
-  try {
-    localStorage.setItem(PATROL_USE_AMAP_IP_KEY, checked ? "1" : "0");
-  } catch {
-    /* ignore */
-  }
-  showToast({
-    message: checked ? "已开启：巡护改用高德 IP 粗定位" : "已关闭：巡护恢复使用 GPS",
-    position: "bottom",
-  });
-}
-
 function requestLocationPermission() {
   if (!navigator.geolocation) {
     showToast({ message: "当前设备不支持定位能力", position: "middle" });
@@ -261,7 +246,7 @@ async function showLocationDiagnostics() {
   lines.push("1. 手机系统里开启“高精度定位（GPS+WLAN+移动网络）”；");
   lines.push("2. 关闭省电模式，给 Chrome 允许“位置信息”权限；");
   lines.push("3. 首次定位尽量在室外或窗边等待 10-20 秒；");
-  lines.push("4. 若仍失败，可在首页「其他」开启“高德 IP 顶替 GPS”（城市级粗定位）。");
+  lines.push("4. 若仍失败，建议检查系统定位服务、网络状态或更换浏览器后重试。");
 
   showDialog({
     title: "定位诊断",
@@ -274,10 +259,8 @@ async function showLocationDiagnostics() {
 onMounted(() => {
   try {
     pwaTipDismissed.value = localStorage.getItem(PWA_TIP_DISMISS_KEY) === "1";
-    useAmapIpForPatrol.value = localStorage.getItem(PATROL_USE_AMAP_IP_KEY) === "1";
   } catch {
     pwaTipDismissed.value = false;
-    useAmapIpForPatrol.value = false;
   }
 
   beforeInstallHandler = (e) => {
@@ -363,15 +346,6 @@ onUnmounted(() => {
                   :model-value="simulateOffline"
                   size="20px"
                   @update:model-value="onSimulateOfflineChange"
-                />
-              </template>
-            </van-cell>
-            <van-cell center title="高德 IP 顶替 GPS" label="开启后巡护轨迹采样与事件定位改为高德 IP 粗定位（城市级）">
-              <template #right-icon>
-                <van-switch
-                  :model-value="useAmapIpForPatrol"
-                  size="20px"
-                  @update:model-value="onUseAmapIpForPatrolChange"
                 />
               </template>
             </van-cell>

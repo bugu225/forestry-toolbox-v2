@@ -4,16 +4,11 @@ import { showConfirmDialog, showFailToast, showSuccessToast, showToast } from "v
 import { storeToRefs } from "pinia";
 import { useNetworkStore } from "../stores/network";
 import { loadTianditu } from "../services/tiandituLoader";
-import { locateByAmapIp } from "../services/amapIpLocate";
 import { deleteRecord, getAllRecords, putRecord, stores } from "../services/offlineDb";
 import { describeGeoError, getCurrentPositionCompat } from "../utils/geolocation";
 
 const networkStore = useNetworkStore();
 const { effectiveOnline } = storeToRefs(networkStore);
-
-const PATROL_USE_AMAP_IP_KEY = "ftb2_patrol_use_amap_ip";
-/** 开启后：采样与事件定位优先走高德 IP 粗定位（顶替 GPS）；关闭则使用浏览器 GPS */
-const useAmapIpForGps = ref(false);
 
 const SAMPLE_INTERVAL_MS = 1 * 60 * 1000;
 const MAX_AUDIO_MS = 120000;
@@ -66,22 +61,6 @@ const eventNote = ref("");
 const eventPhotoDataUrl = ref("");
 const eventAudioDataUrl = ref("");
 const photoInputRef = ref(null);
-
-const filterTypes = ref(EVENT_TYPES.map((t) => t.value));
-const sortMode = ref("time_desc");
-
-const displayEvents = computed(() => {
-  const set = new Set(filterTypes.value);
-  const list = events.value.filter((e) => set.has(e.type));
-  const sorted = [...list].sort((a, b) => {
-    if (sortMode.value === "time_desc") return (b.recorded_at || 0) - (a.recorded_at || 0);
-    if (sortMode.value === "time_asc") return (a.recorded_at || 0) - (b.recorded_at || 0);
-    const c = String(a.type).localeCompare(String(b.type));
-    if (c !== 0) return c;
-    return (b.recorded_at || 0) - (a.recorded_at || 0);
-  });
-  return sorted;
-});
 
 /** 有效坐标、按时间排序（与地图折线/回放滑块一致） */
 const orderedPoints = computed(() =>
@@ -143,7 +122,6 @@ const eventMarkers = [];
 let playbackMarker = null;
 let currentPosMarker = null;
 let playbackTimer = null;
-const mapType = ref("hybrid");
 const latestDeviceCoord = ref(null);
 
 const playbackIndex = ref(0);
@@ -157,6 +135,8 @@ let mediaStream = null;
 let recordStopTimer = null;
 
 const quickEventSheetVisible = ref(false);
+const showEventList = ref(true);
+const showTrackList = ref(true);
 
 function formatCoord(n) {
   const x = Number(n);
@@ -240,24 +220,6 @@ function makeEventMarker(ev) {
   return new TMapCtor.Marker(lnglat);
 }
 
-function resolveTiandituMapType(type) {
-  if (typeof window === "undefined") return null;
-  if (type === "satellite") return window.TMAP_SATELLITE_MAP || null;
-  if (type === "hybrid") return window.TMAP_HYBRID_MAP || null;
-  return window.TMAP_NORMAL_MAP || null;
-}
-
-function applyMapType() {
-  if (!mapInst) return;
-  const target = resolveTiandituMapType(mapType.value);
-  if (!target) return;
-  try {
-    mapInst.setMapType(target);
-  } catch {
-    /* ignore */
-  }
-}
-
 function redrawMapLayers() {
   if (!mapInst || !TMapCtor) return;
   clearMapOverlays();
@@ -299,7 +261,7 @@ function redrawMapLayers() {
   const selfPos = latestDeviceCoord.value;
   if (isValidLngLat(selfPos)) {
     currentPosMarker = new TMapCtor.Marker(toTLngLat(selfPos));
-    currentPosMarker.setTitle(`我的当前位置（${selfPos.source === "amap_ip" ? "高德 IP 粗定位" : "GPS"}）`);
+    currentPosMarker.setTitle("我的当前位置（GPS）");
     mapInst.addOverLay(currentPosMarker);
   } else if (path.length) {
     const lastPos = path[path.length - 1];
@@ -344,7 +306,14 @@ async function initAmapIfNeeded() {
   try {
     mapInst = new TMapCtor.Map(el);
     mapInst.centerAndZoom(new TMapCtor.LngLat(center[0], center[1]), zoom);
-    applyMapType();
+    try {
+      const hybrid = typeof window !== "undefined" ? (window.TMAP_HYBRID_MAP || window.TMAP_SATELLITE_MAP) : null;
+      if (hybrid && typeof mapInst.setMapType === "function") {
+        mapInst.setMapType(hybrid);
+      }
+    } catch {
+      /* ignore */
+    }
     redrawMapLayers();
     requestAnimationFrame(() => {
       try {
@@ -363,10 +332,6 @@ async function initAmapIfNeeded() {
 watch([points, events, playbackIndex], () => {
   if (mapInst) redrawMapLayers();
 }, { deep: true });
-
-watch(mapType, () => {
-  applyMapType();
-});
 
 function centerMapToCurrentPosition() {
   if (!mapInst || !TMapCtor) return;
@@ -465,18 +430,6 @@ function clearSamplingTimer() {
 }
 
 async function resolvePositionOnce() {
-  if (useAmapIpForGps.value) {
-    const row = await locateByAmapIp();
-    latestDeviceCoord.value = { lat: Number(row.lat), lng: Number(row.lng), source: "amap_ip" };
-    return {
-      coords: {
-        latitude: Number(row.lat),
-        longitude: Number(row.lng),
-        accuracy: 8000,
-      },
-      timestamp: Date.now(),
-    };
-  }
   const pos = await getCurrentPositionCompat();
   latestDeviceCoord.value = {
     lat: Number(pos?.coords?.latitude),
@@ -508,10 +461,6 @@ async function recordSamplePoint() {
     await putRecord(stores.patrolPoints, rec);
     points.value = [...points.value, rec].sort((a, b) => a.recorded_at - b.recorded_at);
   } catch (e) {
-    if (useAmapIpForGps.value) {
-      showToast("高德 IP 定位失败，轨迹点未记录");
-      return;
-    }
     showToast(`${describeGeoError(e, "定位失败")}，轨迹点未记录`);
   }
 }
@@ -539,20 +488,12 @@ async function startPatrol() {
 
   gpsBusy.value = true;
   try {
-    if (useAmapIpForGps.value) {
-      await locateByAmapIp();
-    } else {
-      if (!navigator.geolocation) {
-        showFailToast("当前设备不支持定位");
-        return;
-      }
-      await resolvePositionOnce();
-    }
-  } catch (e) {
-    if (useAmapIpForGps.value) {
-      showFailToast("高德 IP 定位失败，无法开始巡护（请检查网络与高德 Key）");
+    if (!navigator.geolocation) {
+      showFailToast("当前设备不支持定位");
       return;
     }
+    await resolvePositionOnce();
+  } catch (e) {
     showFailToast(describeGeoError(e, "无法开始巡护"));
     return;
   } finally {
@@ -822,20 +763,7 @@ async function deleteEvent(ev) {
   showSuccessToast("已删除");
 }
 
-watch(useAmapIpForGps, (v) => {
-  try {
-    localStorage.setItem(PATROL_USE_AMAP_IP_KEY, v ? "1" : "0");
-  } catch {
-    /* ignore */
-  }
-});
-
 onMounted(async () => {
-  try {
-    useAmapIpForGps.value = localStorage.getItem(PATROL_USE_AMAP_IP_KEY) === "1";
-  } catch {
-    /* ignore */
-  }
   try {
     await restoreActivePatrol();
   } catch {
@@ -858,109 +786,91 @@ onUnmounted(() => {
     <van-nav-bar title="巡护助手" left-arrow @click-left="$router.back()" />
 
     <div class="panel patrol-one">
-      <p class="hint">
-        轨迹与事件保存在本机 IndexedDB。地图使用天地图 JS（需配置 TIANDITU_JS_KEY，或在已部署的 index.html 注入 meta
-        forestry-tianditu-key）。
-      </p>
-
-      <div v-if="activeTask" class="status-chip">
-        <span class="dot" />
-        巡护进行中 · 已采 {{ points.length }} 点 · 事件 {{ events.length }} 条
+      <div class="top-row">
+        <div v-if="activeTask" class="status-chip">
+          <span class="dot" />
+          巡护中
+        </div>
+        <div v-else-if="endedTaskView" class="status-chip ended">已结束</div>
+        <div v-else class="status-chip muted">未开始</div>
+        <div class="net-chip">网络：{{ effectiveOnline ? "在线" : "离线" }}</div>
       </div>
-      <div v-else-if="endedTaskView" class="status-chip ended">已结束 · 已采 {{ points.length }} 点 · 事件 {{ events.length }} 条</div>
-      <div v-else class="status-chip muted">未开始巡护</div>
 
-      <div class="actions">
+      <div class="map-wrap">
+        <p class="hint tight">
+          轨迹与事件保存在本机。地图支持卫星底图、事件点、轨迹回放与当前位置显示。
+        </p>
+        <div class="stats-chip">{{ patrolStatsText }}</div>
+        <div v-if="mapError" class="map-fallback">
+          <p>{{ mapError }}</p>
+          <p v-if="mapError.includes('超时') || mapError.includes('脚本')" class="sub">
+            请检查网络、天地图控制台域名白名单与 Key 配置。
+          </p>
+          <p v-else class="sub">
+            可在服务器 backend/.env.local 中配置 TIANDITU_JS_KEY；或在当前页 index.html 增加 meta forestry-tianditu-key
+            后强刷，无需重新 npm build。
+          </p>
+        </div>
+        <div class="map-stage">
+          <div ref="amapDivRef" class="amap-box" />
+          <van-button class="recenter-btn" size="small" round type="primary" @click="centerMapToCurrentPosition">⊕</van-button>
+        </div>
+        <div class="map-tool-row">
+          <van-button size="small" plain type="primary" @click="fitMapToTrack">显示轨迹</van-button>
+          <van-button size="small" plain type="primary" :disabled="orderedPoints.length < 2" @click="togglePlayback">
+            {{ playbackPlaying ? "暂停回放" : "播放回放" }}
+          </van-button>
+          <span class="play-label">位置 {{ orderedPoints.length ? playbackIndex + 1 : 0 }} / {{ orderedPoints.length }}</span>
+        </div>
+        <van-slider
+          v-model="playbackIndex"
+          :min="0"
+          :max="Math.max(0, orderedPoints.length - 1)"
+          :disabled="orderedPoints.length < 1"
+          bar-height="4px"
+          active-color="#07c160"
+        />
+        <div class="map-legend">
+          <span class="legend-title">图例</span>
+          <span v-for="t in EVENT_TYPES" :key="`legend_${t.value}`" class="legend-item">
+            <span class="legend-dot" :style="{ backgroundColor: t.color }" />
+            {{ t.label }}
+          </span>
+        </div>
+      </div>
+
+      <div class="actions compact-actions">
         <van-button v-if="!activeTask" type="primary" block :loading="gpsBusy" @click="startPatrol">
           {{ endedTaskView ? "开始新巡护" : "开始巡护" }}
         </van-button>
         <template v-if="activeTask">
-          <van-button type="warning" block plain @click="openEventSheet">记录事件</van-button>
-          <van-button type="primary" block plain :loading="eventSaveBusy" @click="quickRecordAnomaly">一键记录异常</van-button>
           <van-button type="danger" block plain @click="stopPatrol">结束巡护</van-button>
+          <van-button type="warning" block plain @click="openEventSheet">标记事件</van-button>
+          <van-button type="primary" block plain :loading="eventSaveBusy" @click="quickRecordAnomaly">一键异常</van-button>
         </template>
       </div>
 
-      <h3 class="section-title">地图</h3>
-      <p class="hint tight">
-        展示轨迹折线与事件点；下方滑块与播放用于沿轨迹回放。
-        <span v-if="!effectiveOnline" class="warn">离线时瓦片可能无法加载。</span>
-      </p>
-      <p class="map-disclaimer">
-        地图数据与底图服务由天地图提供。页面仅用于巡护辅助展示与定位记录，不涉及任何行政区划主张。
-      </p>
-      <div class="stats-chip">{{ patrolStatsText }}</div>
-      <div class="map-tool-row">
-        <van-button size="small" plain type="primary" @click="centerMapToCurrentPosition">回到我位置</van-button>
-        <van-button size="small" plain type="primary" @click="fitMapToTrack">适配轨迹范围</van-button>
+      <div class="storage-toggle-row">
+        <van-button size="small" :type="showEventList ? 'primary' : 'default'" plain @click="showEventList = !showEventList">事件</van-button>
+        <van-button size="small" :type="showTrackList ? 'primary' : 'default'" plain @click="showTrackList = !showTrackList">轨迹</van-button>
       </div>
-      <div class="map-legend">
-        <span class="legend-title">图例</span>
-        <span v-for="t in EVENT_TYPES" :key="`legend_${t.value}`" class="legend-item">
-          <span class="legend-dot" :style="{ backgroundColor: t.color }" />
-          {{ t.label }}
-        </span>
-      </div>
-      <div v-if="mapError" class="map-fallback">
-        <p>{{ mapError }}</p>
-        <p v-if="mapError.includes('超时') || mapError.includes('脚本')" class="sub">
-          请检查网络、天地图控制台域名白名单与 Key 配置。
-        </p>
-        <p v-else class="sub">
-          可在服务器 backend/.env.local 中配置 TIANDITU_JS_KEY；或在当前页 index.html 增加 meta forestry-tianditu-key
-          后强刷，无需重新 npm build。
-        </p>
-      </div>
-      <div ref="amapDivRef" class="amap-box" />
-      <div class="playback-bar">
-        <van-button size="small" type="primary" :disabled="orderedPoints.length < 2" @click="togglePlayback">
-          {{ playbackPlaying ? "暂停回放" : "播放回放" }}
-        </van-button>
-        <span class="play-label">位置 {{ orderedPoints.length ? playbackIndex + 1 : 0 }} / {{ orderedPoints.length }}</span>
-      </div>
-      <van-slider
-        v-model="playbackIndex"
-        :min="0"
-        :max="Math.max(0, orderedPoints.length - 1)"
-        :disabled="orderedPoints.length < 1"
-        bar-height="4px"
-        active-color="#07c160"
-      />
 
-      <h3 class="section-title">事件</h3>
-      <van-cell-group inset title="筛选与排序" class="block">
-        <van-cell title="事件类型（多选）">
-          <template #value>
-            <span class="filter-hint">{{ filterTypes.length }}/{{ EVENT_TYPES.length }} 类</span>
+      <van-cell-group v-if="showEventList" inset title="事件列表（本机存放）" class="block">
+        <van-empty v-if="!events.length" description="暂无事件" />
+        <van-swipe-cell v-for="ev in events" :key="ev.local_id">
+          <van-cell
+            :title="`${eventTypeLabel(ev.type)}`"
+            :label="`${formatTime(ev.recorded_at)} · ${formatCoord(ev.lat)}, ${formatCoord(ev.lng)}${ev.note ? ' · ' + ev.note : ''}${ev.audio_dataurl ? ' · 含录音' : ''}`"
+            is-link
+            @click="focusEventOnMap(ev)"
+          />
+          <template #right>
+            <van-button square type="danger" text="删除" class="swipe-del" @click="deleteEvent(ev)" />
           </template>
-        </van-cell>
-        <van-checkbox-group v-model="filterTypes" class="type-checks">
-          <van-checkbox v-for="t in EVENT_TYPES" :key="t.value" :name="t.value" shape="square">
-            {{ t.label }}
-          </van-checkbox>
-        </van-checkbox-group>
-        <div class="sort-row">
-          <span class="sort-label">排序</span>
-          <van-button size="small" :type="sortMode === 'time_desc' ? 'primary' : 'default'" @click="sortMode = 'time_desc'">从新到旧</van-button>
-          <van-button size="small" :type="sortMode === 'time_asc' ? 'primary' : 'default'" @click="sortMode = 'time_asc'">从旧到新</van-button>
-          <van-button size="small" :type="sortMode === 'type' ? 'primary' : 'default'" @click="sortMode = 'type'">按类型</van-button>
-        </div>
+        </van-swipe-cell>
       </van-cell-group>
 
-      <van-empty v-if="!displayEvents.length" description="无匹配事件，请调整筛选或先记录事件" />
-      <van-swipe-cell v-for="ev in displayEvents" :key="ev.local_id">
-        <van-cell
-          :title="`${eventTypeLabel(ev.type)}`"
-          :label="`${formatTime(ev.recorded_at)} · ${formatCoord(ev.lat)}, ${formatCoord(ev.lng)}${ev.note ? ' · ' + ev.note : ''}${ev.audio_dataurl ? ' · 含录音' : ''}`"
-          is-link
-          @click="focusEventOnMap(ev)"
-        />
-        <template #right>
-          <van-button square type="danger" text="删除" class="swipe-del" @click="deleteEvent(ev)" />
-        </template>
-      </van-swipe-cell>
-
-      <van-cell-group inset title="最近轨迹点" class="block trail-block">
+      <van-cell-group v-if="showTrackList" inset title="轨迹点（本机存放）" class="block trail-block">
         <van-empty
           v-if="!points.length"
           image="search"
@@ -974,8 +884,8 @@ onUnmounted(() => {
         />
       </van-cell-group>
     </div>
-
-    <van-action-sheet
+  </div>
+  <van-action-sheet
       v-model:show="quickEventSheetVisible"
       title="一键记录异常"
       description="优先使用最近轨迹点坐标；若无轨迹点则尝试实时定位。"
@@ -985,7 +895,7 @@ onUnmounted(() => {
       @select="onQuickEventSelect"
     />
 
-    <van-popup v-model:show="showEventSheet" position="bottom" round :style="{ padding: '16px' }">
+  <van-popup v-model:show="showEventSheet" position="bottom" round :style="{ padding: '16px' }">
       <h3 class="sheet-title">记录事件</h3>
       <van-radio-group v-model="eventType" direction="horizontal" class="type-row">
         <van-radio v-for="t in EVENT_TYPES" :key="t.value" :name="t.value">{{ t.label }}</van-radio>
@@ -1009,8 +919,7 @@ onUnmounted(() => {
         <van-button block type="default" @click="showEventSheet = false">取消</van-button>
         <van-button block type="primary" :loading="eventSaveBusy" @click="saveEvent">保存</van-button>
       </div>
-    </van-popup>
-  </div>
+  </van-popup>
 </template>
 
 <style scoped>
@@ -1030,29 +939,25 @@ onUnmounted(() => {
   padding: 12px 12px 24px;
 }
 
-.section-title {
-  margin: 20px 0 8px;
-  font-size: 15px;
-  font-weight: 600;
-  color: #323233;
-}
-
-.section-title:first-of-type {
-  margin-top: 4px;
-}
-
-.sort-row {
+.top-row {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  padding: 8px 16px 12px;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
 }
 
-.sort-label {
-  font-size: 14px;
-  color: #323233;
-  margin-right: 4px;
+.net-chip {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: #646566;
+  background: #f2f3f5;
+}
+
+.map-wrap {
+  margin-bottom: 12px;
 }
 
 .hint {
@@ -1082,8 +987,34 @@ onUnmounted(() => {
 
 .map-tool-row {
   display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   margin: 0 0 10px;
+}
+
+.map-stage {
+  position: relative;
+}
+
+.recenter-btn {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  min-width: 34px;
+  height: 34px;
+  padding: 0;
+  font-weight: 600;
+}
+
+.compact-actions {
+  margin-bottom: 10px;
+}
+
+.storage-toggle-row {
+  display: flex;
+  gap: 10px;
+  margin: 0 0 8px;
 }
 
 .map-legend {
@@ -1111,10 +1042,6 @@ onUnmounted(() => {
   width: 8px;
   height: 8px;
   border-radius: 999px;
-}
-
-.warn {
-  color: #ee0a24;
 }
 
 .status-chip {
@@ -1181,18 +1108,6 @@ onUnmounted(() => {
   margin-top: 8px;
 }
 
-.type-checks {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px 16px;
-  padding: 8px 16px 12px;
-}
-
-.filter-hint {
-  font-size: 12px;
-  color: #969799;
-}
-
 .amap-box {
   width: 100%;
   height: 300px;
@@ -1215,24 +1130,6 @@ onUnmounted(() => {
   margin: 8px 0 0;
   font-size: 12px;
   color: #969799;
-}
-
-.map-disclaimer {
-  margin: 0 0 10px;
-  padding: 8px 10px;
-  font-size: 12px;
-  line-height: 1.5;
-  color: #646566;
-  background: #f7f8fa;
-  border: 1px solid #ebedf0;
-  border-radius: 8px;
-}
-
-.playback-bar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin: 12px 0 8px;
 }
 
 .play-label {
