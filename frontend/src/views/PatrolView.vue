@@ -10,7 +10,14 @@ import { describeGeoError, getCurrentPositionCompat } from "../utils/geolocation
 const networkStore = useNetworkStore();
 const { effectiveOnline } = storeToRefs(networkStore);
 
-const SAMPLE_INTERVAL_MS = 1 * 60 * 1000;
+const SAMPLE_INTERVAL_MOVING_MS = 15 * 1000;
+const SAMPLE_INTERVAL_STATIC_MS = 60 * 1000;
+const ACCEPTABLE_ACCURACY_M = 100;
+const GOOD_ACCURACY_M = 50;
+const STATIONARY_DISTANCE_M = 10;
+const JUMP_CHECK_WINDOW_MS = 60 * 1000;
+const JUMP_DISTANCE_M = 200;
+const JUMP_SPEED_MPS = 12;
 const MAX_AUDIO_MS = 120000;
 const PLAYBACK_STEP_MS = 800;
 
@@ -38,6 +45,21 @@ function eventTypeLabel(value) {
 
 function eventTypeColor(value) {
   return EVENT_TYPES.find((t) => t.value === value)?.color || "#646566";
+}
+
+function locationSourceLabel(source) {
+  if (source === "track_point") return "轨迹点回填";
+  if (source === "gps_live") return "实时定位";
+  return "未知来源";
+}
+
+function classifyAccuracyLevel(acc) {
+  const v = Number(acc);
+  if (!Number.isFinite(v) || v <= 0) return "unknown";
+  if (v <= 20) return "A";
+  if (v <= GOOD_ACCURACY_M) return "B";
+  if (v <= ACCEPTABLE_ACCURACY_M) return "C";
+  return "D";
 }
 
 function isValidLngLat(p) {
@@ -137,6 +159,18 @@ let recordStopTimer = null;
 const quickEventSheetVisible = ref(false);
 const showEventList = ref(true);
 const showTrackList = ref(true);
+const sampleBusy = ref(false);
+const lastSampleAt = ref(0);
+let lastSamplingWarnAt = 0;
+
+const sampleHintText = computed(() => {
+  if (!activeTask.value) return "未开始采样";
+  const base = orderedPoints.value.length >= 2
+    ? (nextSamplingIntervalMs() <= SAMPLE_INTERVAL_MOVING_MS ? "采样频率：移动优先" : "采样频率：静止省电")
+    : "采样频率：初始化中";
+  if (!lastSampleAt.value) return `${base} · 暂无成功采样`;
+  return `${base} · 最近采样 ${formatTime(lastSampleAt.value)}`;
+});
 
 function formatCoord(n) {
   const x = Number(n);
@@ -220,6 +254,24 @@ function makeEventMarker(ev) {
   return new TMapCtor.Marker(lnglat);
 }
 
+function makeCurrentPosMarker(row, opts = {}) {
+  const lnglat = toTLngLat(row);
+  const color = opts.fallback ? "#969799" : "#1989fa";
+  try {
+    if (TMapCtor.Icon && TMapCtor.Point) {
+      const icon = new TMapCtor.Icon({
+        iconUrl: dotIconDataUrl(color),
+        iconSize: new TMapCtor.Point(30, 30),
+        iconAnchor: new TMapCtor.Point(15, 15),
+      });
+      return new TMapCtor.Marker(lnglat, { icon });
+    }
+  } catch {
+    /* fall through */
+  }
+  return new TMapCtor.Marker(lnglat);
+}
+
 function redrawMapLayers() {
   if (!mapInst || !TMapCtor) return;
   clearMapOverlays();
@@ -255,17 +307,17 @@ function redrawMapLayers() {
     playbackMarker = new TMapCtor.Marker(pos);
     playbackMarker.setTitle("轨迹回放当前位置");
     mapInst.addOverLay(playbackMarker);
-    mapInst.panTo(pos);
+    if (playbackPlaying.value) mapInst.panTo(pos);
   }
 
   const selfPos = latestDeviceCoord.value;
   if (isValidLngLat(selfPos)) {
-    currentPosMarker = new TMapCtor.Marker(toTLngLat(selfPos));
+    currentPosMarker = makeCurrentPosMarker(selfPos);
     currentPosMarker.setTitle("我的当前位置（GPS）");
     mapInst.addOverLay(currentPosMarker);
   } else if (path.length) {
-    const lastPos = path[path.length - 1];
-    currentPosMarker = new TMapCtor.Marker(lastPos);
+    const lastPoint = pathArr[pathArr.length - 1];
+    currentPosMarker = makeCurrentPosMarker(lastPoint, { fallback: true });
     currentPosMarker.setTitle("我的当前位置（最近轨迹点）");
     mapInst.addOverLay(currentPosMarker);
   }
@@ -273,6 +325,11 @@ function redrawMapLayers() {
 
 async function initAmapIfNeeded() {
   mapError.value = "";
+  if (!effectiveOnline.value) {
+    mapError.value = "当前离线：可继续定位并记录轨迹/事件，联网后自动恢复地图显示。";
+    destroyMap();
+    return;
+  }
   if (mapInst) {
     redrawMapLayers();
     return;
@@ -333,8 +390,20 @@ watch([points, events, playbackIndex], () => {
   if (mapInst) redrawMapLayers();
 }, { deep: true });
 
+watch(effectiveOnline, (online) => {
+  if (online) {
+    void initAmapIfNeeded();
+    return;
+  }
+  mapError.value = "当前离线：可继续定位并记录轨迹/事件，联网后自动恢复地图显示。";
+  destroyMap();
+});
+
 function centerMapToCurrentPosition() {
-  if (!mapInst || !TMapCtor) return;
+  if (!mapInst || !TMapCtor) {
+    showToast(effectiveOnline.value ? "地图尚未加载完成" : "当前离线，地图暂不可用");
+    return;
+  }
   const selfPos = latestDeviceCoord.value;
   if (isValidLngLat(selfPos)) {
     mapInst.panTo(toTLngLat(selfPos));
@@ -424,9 +493,36 @@ async function loadPointsAndEvents(taskId) {
 
 function clearSamplingTimer() {
   if (samplingTimer.value) {
-    clearInterval(samplingTimer.value);
+    clearTimeout(samplingTimer.value);
     samplingTimer.value = null;
   }
+}
+
+function notifySamplingIssue(message) {
+  const now = Date.now();
+  if (now - lastSamplingWarnAt < 20000) return;
+  lastSamplingWarnAt = now;
+  showToast(message);
+}
+
+function nextSamplingIntervalMs() {
+  const pts = orderedPoints.value;
+  if (pts.length < 2) return SAMPLE_INTERVAL_MOVING_MS;
+  const last = pts[pts.length - 1];
+  const prev = pts[pts.length - 2];
+  const dist = haversineMeters(last, prev);
+  return dist <= STATIONARY_DISTANCE_M ? SAMPLE_INTERVAL_STATIC_MS : SAMPLE_INTERVAL_MOVING_MS;
+}
+
+function scheduleNextSample(delayMs) {
+  if (!activeTask.value) return;
+  clearSamplingTimer();
+  samplingTimer.value = setTimeout(async () => {
+    if (!activeTask.value) return;
+    await recordSamplePoint();
+    if (!activeTask.value) return;
+    scheduleNextSample(nextSamplingIntervalMs());
+  }, Math.max(1000, Number(delayMs) || SAMPLE_INTERVAL_MOVING_MS));
 }
 
 async function resolvePositionOnce() {
@@ -441,14 +537,29 @@ async function resolvePositionOnce() {
 
 async function recordSamplePoint() {
   if (!activeTask.value) return;
+  sampleBusy.value = true;
   try {
     const pos = await resolvePositionOnce();
     const lat = Number(pos.coords.latitude);
     const lng = Number(pos.coords.longitude);
     const acc = Number(pos.coords.accuracy || 0);
     if (!isValidLngLat({ lat, lng })) {
-      showToast("定位坐标无效，轨迹点未记录");
-      return;
+      notifySamplingIssue("定位坐标无效，轨迹点未记录");
+      return false;
+    }
+    if (Number.isFinite(acc) && acc > ACCEPTABLE_ACCURACY_M) {
+      notifySamplingIssue("当前定位精度较差，已跳过本次采样");
+      return false;
+    }
+    const prev = orderedPoints.value.length ? orderedPoints.value[orderedPoints.value.length - 1] : null;
+    if (prev) {
+      const dt = Math.max(1, Date.now() - Number(prev.recorded_at || 0));
+      const dist = haversineMeters(prev, { lat, lng });
+      const speedMps = dist / (dt / 1000);
+      if (dt <= JUMP_CHECK_WINDOW_MS && dist >= JUMP_DISTANCE_M && speedMps > JUMP_SPEED_MPS) {
+        notifySamplingIssue("检测到疑似漂移点，已自动忽略");
+        return false;
+      }
     }
     const rec = {
       local_id: uid("ppt"),
@@ -456,19 +567,38 @@ async function recordSamplePoint() {
       lat,
       lng,
       accuracy: acc,
+      quality_level: classifyAccuracyLevel(acc),
+      source: "gps_track",
       recorded_at: Date.now(),
     };
     await putRecord(stores.patrolPoints, rec);
     points.value = [...points.value, rec].sort((a, b) => a.recorded_at - b.recorded_at);
+    lastSampleAt.value = rec.recorded_at;
+    return true;
   } catch (e) {
-    showToast(`${describeGeoError(e, "定位失败")}，轨迹点未记录`);
+    notifySamplingIssue(`${describeGeoError(e, "定位失败")}，轨迹点未记录`);
+    return false;
+  } finally {
+    sampleBusy.value = false;
   }
 }
 
 function startSamplingLoop(withImmediate) {
   clearSamplingTimer();
-  if (withImmediate) void recordSamplePoint();
-  samplingTimer.value = setInterval(() => void recordSamplePoint(), SAMPLE_INTERVAL_MS);
+  if (withImmediate) {
+    void recordSamplePoint().finally(() => {
+      if (!activeTask.value) return;
+      scheduleNextSample(nextSamplingIntervalMs());
+    });
+    return;
+  }
+  scheduleNextSample(nextSamplingIntervalMs());
+}
+
+async function sampleNow() {
+  if (!activeTask.value) return;
+  const ok = await recordSamplePoint();
+  if (ok) showSuccessToast("已完成一次即时采样");
 }
 
 async function startPatrol() {
@@ -485,6 +615,7 @@ async function startPatrol() {
   endedTaskView.value = null;
   points.value = [];
   events.value = [];
+  lastSampleAt.value = 0;
 
   gpsBusy.value = true;
   try {
@@ -508,7 +639,7 @@ async function startPatrol() {
   };
   await putRecord(stores.patrolTasks, task);
   activeTask.value = task;
-  showSuccessToast("已开始巡护，每 1 分钟自动记录轨迹点");
+  showSuccessToast("已开始巡护：移动时高频采样，静止时低频省电");
   startSamplingLoop(true);
 }
 
@@ -539,6 +670,8 @@ async function restoreActivePatrol() {
   if (active) {
     activeTask.value = active;
     await loadPointsAndEvents(active.local_id);
+    const latest = [...points.value].sort((a, b) => (b.recorded_at || 0) - (a.recorded_at || 0))[0];
+    lastSampleAt.value = Number(latest?.recorded_at || 0);
     startSamplingLoop(false);
     showToast("已恢复进行中的巡护");
   }
@@ -629,7 +762,12 @@ function coordinatesFromLastPointOrNull() {
   const lat = Number(last.lat);
   const lng = Number(last.lng);
   if (!isValidLngLat({ lat, lng })) return null;
-  return { lat, lng };
+  return {
+    lat,
+    lng,
+    accuracy: Number(last.accuracy || 0),
+    source: "track_point",
+  };
 }
 
 async function resolveCoordsForEvent() {
@@ -638,11 +776,12 @@ async function resolveCoordsForEvent() {
   const pos = await resolvePositionOnce();
   const lat = Number(pos.coords.latitude);
   const lng = Number(pos.coords.longitude);
+  const accuracy = Number(pos.coords.accuracy || 0);
   if (!isValidLngLat({ lat, lng })) throw new Error("bad_coord");
-  return { lat, lng };
+  return { lat, lng, accuracy, source: "gps_live" };
 }
 
-async function persistPatrolEvent({ lat, lng, type, note, photo, audio }) {
+async function persistPatrolEvent({ lat, lng, type, note, photo, audio, accuracy, source }) {
   if (!activeTask.value) return;
   const rec = {
     local_id: uid("pevt"),
@@ -653,6 +792,9 @@ async function persistPatrolEvent({ lat, lng, type, note, photo, audio }) {
     note: (note || "").trim(),
     photo_dataurl: photo || null,
     audio_dataurl: audio || null,
+    accuracy: Number(accuracy || 0),
+    quality_level: classifyAccuracyLevel(accuracy),
+    source: source || "unknown",
     recorded_at: Date.now(),
   };
   await putRecord(stores.patrolEvents, rec);
@@ -673,7 +815,7 @@ async function onQuickEventSelect(action) {
 
   eventSaveBusy.value = true;
   try {
-    const { lat, lng } = await resolveCoordsForEvent();
+    const { lat, lng, accuracy, source } = await resolveCoordsForEvent();
     await persistPatrolEvent({
       lat,
       lng,
@@ -681,6 +823,8 @@ async function onQuickEventSelect(action) {
       note: "一键记录异常",
       photo: null,
       audio: null,
+      accuracy,
+      source,
     });
     showSuccessToast("已保存事件");
   } catch {
@@ -728,7 +872,7 @@ async function saveEvent() {
   stopRecordingInternal();
   eventSaveBusy.value = true;
   try {
-    const { lat, lng } = await resolveCoordsForEvent();
+    const { lat, lng, accuracy, source } = await resolveCoordsForEvent();
     await persistPatrolEvent({
       lat,
       lng,
@@ -736,6 +880,8 @@ async function saveEvent() {
       note: (eventNote.value || "").trim(),
       photo: eventPhotoDataUrl.value || null,
       audio: eventAudioDataUrl.value || null,
+      accuracy,
+      source,
     });
     showEventSheet.value = false;
     showSuccessToast("事件已保存");
@@ -798,12 +944,16 @@ onUnmounted(() => {
 
       <div class="map-wrap">
         <p class="hint tight">
-          轨迹与事件保存在本机。地图支持卫星底图、事件点、轨迹回放与当前位置显示。
+          轨迹与事件坐标均保存在本机；离线可持续记录，联网后自动加载地图查看事件点与轨迹。
         </p>
+        <p class="hint tight sample-hint">{{ sampleHintText }}</p>
         <div class="stats-chip">{{ patrolStatsText }}</div>
         <div v-if="mapError" class="map-fallback">
           <p>{{ mapError }}</p>
-          <p v-if="mapError.includes('超时') || mapError.includes('脚本')" class="sub">
+          <p v-if="mapError.includes('离线')" class="sub">
+            巡护采样与事件记录不受影响，数据先保存在本机，恢复网络后可继续地图浏览。
+          </p>
+          <p v-else-if="mapError.includes('超时') || mapError.includes('脚本')" class="sub">
             请检查网络、天地图控制台域名白名单与 Key 配置。
           </p>
           <p v-else class="sub">
@@ -847,6 +997,7 @@ onUnmounted(() => {
           <van-button type="danger" block plain @click="stopPatrol">结束巡护</van-button>
           <van-button type="warning" block plain @click="openEventSheet">标记事件</van-button>
           <van-button type="primary" block plain :loading="eventSaveBusy" @click="quickRecordAnomaly">一键异常</van-button>
+          <van-button type="default" block plain :loading="sampleBusy" @click="sampleNow">立即采样</van-button>
         </template>
       </div>
 
@@ -860,7 +1011,7 @@ onUnmounted(() => {
         <van-swipe-cell v-for="ev in events" :key="ev.local_id">
           <van-cell
             :title="`${eventTypeLabel(ev.type)}`"
-            :label="`${formatTime(ev.recorded_at)} · ${formatCoord(ev.lat)}, ${formatCoord(ev.lng)}${ev.note ? ' · ' + ev.note : ''}${ev.audio_dataurl ? ' · 含录音' : ''}`"
+            :label="`${formatTime(ev.recorded_at)} · ${formatCoord(ev.lat)}, ${formatCoord(ev.lng)} · ${locationSourceLabel(ev.source)}${Number.isFinite(Number(ev.accuracy)) && Number(ev.accuracy) > 0 ? ' · 精度约 ' + Math.round(Number(ev.accuracy)) + ' m' : ''}${ev.note ? ' · ' + ev.note : ''}${ev.audio_dataurl ? ' · 含录音' : ''}`"
             is-link
             @click="focusEventOnMap(ev)"
           />
@@ -874,13 +1025,13 @@ onUnmounted(() => {
         <van-empty
           v-if="!points.length"
           image="search"
-          description="尚无采样点（开始后立即采一点，之后每 1 分钟自动记录）"
+          description="尚无采样点（开始后立即采样，后续按移动状态自动调整频率）"
         />
         <van-cell
           v-for="p in points.slice(-6).reverse()"
           :key="p.local_id"
           :title="`${formatCoord(p.lat)}, ${formatCoord(p.lng)}`"
-          :label="`时间 ${formatTime(p.recorded_at)} · 精度约 ${Number.isFinite(Number(p.accuracy)) ? Math.round(p.accuracy) : '—'} m`"
+          :label="`时间 ${formatTime(p.recorded_at)} · 精度约 ${Number.isFinite(Number(p.accuracy)) ? Math.round(p.accuracy) : '—'} m · 质量 ${p.quality_level || 'unknown'}`"
         />
       </van-cell-group>
     </div>
@@ -971,6 +1122,10 @@ onUnmounted(() => {
   margin-bottom: 8px;
 }
 
+.sample-hint {
+  color: #1989fa;
+}
+
 .trail-block {
   margin-top: 12px;
 }
@@ -995,16 +1150,18 @@ onUnmounted(() => {
 
 .map-stage {
   position: relative;
+  isolation: isolate;
 }
 
 .recenter-btn {
   position: absolute;
   right: 10px;
-  bottom: 10px;
+  top: 10px;
   min-width: 34px;
   height: 34px;
   padding: 0;
   font-weight: 600;
+  z-index: 20;
 }
 
 .compact-actions {
