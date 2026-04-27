@@ -9,13 +9,12 @@ import PatrolTrackList from "../components/PatrolTrackList.vue";
 import { loadTianditu } from "../services/tiandituLoader";
 import { exportPatrolPdfReport } from "../services/patrolPdfExport";
 import { deletePatrolPointsForTask, deleteRecord, getAllRecords, putRecord, stores } from "../services/offlineDb";
-import { describeGeoError, getCurrentPositionCompat, getHighAccuracySnapshot, getQuickPositionForEvent } from "../utils/geolocation";
+import { describeGeoError, getCurrentPositionCompat, getHighAccuracySnapshot } from "../utils/geolocation";
 
 const networkStore = useNetworkStore();
 const { effectiveOnline } = storeToRefs(networkStore);
 
 const SAMPLE_INTERVAL_MS = 10 * 1000;
-const LIVE_TRAIL_MAX = 280;
 const ACCEPTABLE_ACCURACY_M = 100;
 const GOOD_ACCURACY_M = 50;
 const JUMP_CHECK_WINDOW_MS = 90 * 1000;
@@ -53,10 +52,7 @@ function eventTypeColor(value) {
 
 function locationSourceLabel(source) {
   if (source === "track_point") return "轨迹点回填";
-  if (source === "gps_live") return "实时定位";
-  if (source === "gps_watch") return "持续 watch";
-  if (source === "gps_sample") return "定时高精度";
-  if (source === "gps_live_event") return "事件定位";
+  if (source === "gps_sample") return "定时采样";
   return "未知来源";
 }
 
@@ -145,16 +141,9 @@ let mapInst = null;
 let polylineInst = null;
 const eventMarkers = [];
 let playbackMarker = null;
-let currentPosMarker = null;
-let livePolylineInst = null;
-const liveTrailDotMarkers = [];
-const LIVE_DOT_SHOW_MAX = 36;
 let playbackTimer = null;
 const latestDeviceCoord = ref(null);
-const liveTrailCoords = ref([]);
-let liveWatchId = null;
 let mapAutoViewportDone = false;
-let liveOverlayRaf = 0;
 
 const playbackIndex = ref(0);
 const playbackPlaying = ref(false);
@@ -211,29 +200,13 @@ function clearMapOverlays() {
       mapInst.removeOverLay(m);
     } catch {}
   }
-  if (livePolylineInst) {
-    try {
-      mapInst.removeOverLay(livePolylineInst);
-    } catch {}
-    livePolylineInst = null;
-  }
-  for (const m of liveTrailDotMarkers.splice(0)) {
-    try {
-      mapInst.removeOverLay(m);
-    } catch {}
-  }
   if (playbackMarker) {
     mapInst.removeOverLay(playbackMarker);
     playbackMarker = null;
   }
-  if (currentPosMarker) {
-    mapInst.removeOverLay(currentPosMarker);
-    currentPosMarker = null;
-  }
 }
 
 function destroyMap() {
-  cancelLiveOverlayPaint();
   stopPlayback();
   clearMapOverlays();
   if (mapInst) {
@@ -273,178 +246,6 @@ function makeEventMarker(ev) {
         iconUrl: dotIconDataUrl(eventTypeColor(ev.type)),
         iconSize: new TMapCtor.Point(26, 26),
         iconAnchor: new TMapCtor.Point(13, 13),
-      });
-      mk.setIcon(icon);
-    }
-  } catch {}
-  return mk;
-}
-
-function makeLiveTrailDotMarker(lat, lng) {
-  const lnglat = new TMapCtor.LngLat(Number(lng), Number(lat));
-  const tiny = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12"><circle cx="6" cy="6" r="4" fill="#69c0ff" stroke="#fff" stroke-width="1"/></svg>`;
-  const url = `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(tiny)}`;
-  let m = null;
-  try {
-    m = new TMapCtor.Marker(lnglat);
-  } catch {
-    try {
-      m = new TMapCtor.Marker({ lnglat });
-    } catch {
-      return null;
-    }
-  }
-  try {
-    if (TMapCtor.Icon && TMapCtor.Point && typeof m.setIcon === "function") {
-      const icon = new TMapCtor.Icon({
-        iconUrl: url,
-        iconSize: new TMapCtor.Point(12, 12),
-        iconAnchor: new TMapCtor.Point(6, 6),
-      });
-      m.setIcon(icon);
-    }
-  } catch {}
-  return m;
-}
-
-function paintLiveOverlays() {
-  if (!mapInst || !TMapCtor) return;
-  if (livePolylineInst) {
-    try {
-      mapInst.removeOverLay(livePolylineInst);
-    } catch {}
-    livePolylineInst = null;
-  }
-  for (const m of liveTrailDotMarkers.splice(0)) {
-    try {
-      mapInst.removeOverLay(m);
-    } catch {}
-  }
-  if (currentPosMarker) {
-    try {
-      mapInst.removeOverLay(currentPosMarker);
-    } catch {}
-    currentPosMarker = null;
-  }
-  const trail = liveTrailCoords.value.filter(isValidLngLat);
-  if (trail.length >= 2) {
-    const path = trail.map((p) => new TMapCtor.LngLat(Number(p.lng), Number(p.lat)));
-    const lineOpts = { color: "#1890ff", weight: 4, opacity: 0.9, lineStyle: "dashed" };
-    try {
-      livePolylineInst = new TMapCtor.Polyline(path, lineOpts);
-      mapInst.addOverLay(livePolylineInst);
-    } catch {
-      try {
-        livePolylineInst = new TMapCtor.Polyline(path, { color: "#1890ff", weight: 4, opacity: 0.9 });
-        mapInst.addOverLay(livePolylineInst);
-      } catch {}
-    }
-  }
-  if (trail.length >= 1) {
-    const idxSet = new Set();
-    const step = Math.max(1, Math.ceil(trail.length / LIVE_DOT_SHOW_MAX));
-    for (let i = 0; i < trail.length; i += step) idxSet.add(i);
-    idxSet.add(trail.length - 1);
-    for (const i of idxSet) {
-      const p = trail[i];
-      if (!isValidLngLat(p)) continue;
-      const dot = makeLiveTrailDotMarker(p.lat, p.lng);
-      if (!dot) continue;
-      try {
-        dot.setTitle("实时轨迹点");
-        mapInst.addOverLay(dot);
-        liveTrailDotMarkers.push(dot);
-      } catch {}
-    }
-  }
-  const selfPos = latestDeviceCoord.value;
-  const pathArr = orderedPoints.value;
-  if (isValidLngLat(selfPos)) {
-    currentPosMarker = makeCurrentPosMarker(selfPos);
-    if (currentPosMarker) {
-      currentPosMarker.setTitle("实时位置（高精度 watch）");
-      mapInst.addOverLay(currentPosMarker);
-    }
-  } else if (pathArr.length) {
-    const lastPoint = pathArr[pathArr.length - 1];
-    currentPosMarker = makeCurrentPosMarker(lastPoint, { fallback: true });
-    if (currentPosMarker) {
-      currentPosMarker.setTitle("我的当前位置（最近轨迹点）");
-      mapInst.addOverLay(currentPosMarker);
-    }
-  }
-}
-
-function schedulePaintLiveOverlays() {
-  if (!mapInst || !TMapCtor) return;
-  if (liveOverlayRaf) return;
-  liveOverlayRaf = requestAnimationFrame(() => {
-    liveOverlayRaf = 0;
-    paintLiveOverlays();
-  });
-}
-
-function cancelLiveOverlayPaint() {
-  if (liveOverlayRaf) {
-    cancelAnimationFrame(liveOverlayRaf);
-    liveOverlayRaf = 0;
-  }
-}
-
-function stopLivePositionWatch() {
-  if (liveWatchId == null) return;
-  try {
-    navigator.geolocation.clearWatch(liveWatchId);
-  } catch {}
-  liveWatchId = null;
-}
-
-function startLivePositionWatch() {
-  stopLivePositionWatch();
-  if (!activeTask.value || typeof navigator === "undefined" || !navigator.geolocation) return;
-  const opts = { enableHighAccuracy: true, maximumAge: 0, timeout: 900000 };
-  liveWatchId = navigator.geolocation.watchPosition(
-    (pos) => {
-      if (!activeTask.value) return;
-      const lat = Number(pos?.coords?.latitude);
-      const lng = Number(pos?.coords?.longitude);
-      if (!isValidLngLat({ lat, lng })) return;
-      const accuracy = Number(pos?.coords?.accuracy || 0);
-      latestDeviceCoord.value = {
-        lat,
-        lng,
-        accuracy,
-        source: "gps_watch",
-        captured_at: Date.now(),
-      };
-      const arr = [...liveTrailCoords.value, { lat, lng }];
-      liveTrailCoords.value = arr.length > LIVE_TRAIL_MAX ? arr.slice(-LIVE_TRAIL_MAX) : arr;
-      schedulePaintLiveOverlays();
-    },
-    () => {},
-    opts
-  );
-}
-
-function makeCurrentPosMarker(row, opts = {}) {
-  const lnglat = toTLngLat(row);
-  const color = opts.fallback ? "#969799" : "#1989fa";
-  let mk = null;
-  try {
-    mk = new TMapCtor.Marker(lnglat);
-  } catch {
-    try {
-      mk = new TMapCtor.Marker({ lnglat });
-    } catch {
-      return null;
-    }
-  }
-  try {
-    if (TMapCtor.Icon && TMapCtor.Point && typeof mk.setIcon === "function") {
-      const icon = new TMapCtor.Icon({
-        iconUrl: dotIconDataUrl(color),
-        iconSize: new TMapCtor.Point(30, 30),
-        iconAnchor: new TMapCtor.Point(15, 15),
       });
       mk.setIcon(icon);
     }
@@ -494,7 +295,6 @@ function redrawMapLayers() {
     if (playbackPlaying.value) mapInst.panTo(pos);
   }
 
-  paintLiveOverlays();
 }
 
 async function initAmapIfNeeded() {
@@ -578,10 +378,10 @@ function centerMapToCurrentPosition() {
     showToast(effectiveOnline.value ? "地图尚未加载完成" : "当前离线，地图暂不可用");
     return;
   }
-  const selfPos = latestDeviceCoord.value;
-  if (isValidLngLat(selfPos)) {
-    mapInst.panTo(toTLngLat(selfPos));
-    showToast("已定位到当前坐标");
+  const sampled = latestDeviceCoord.value;
+  if (isValidLngLat(sampled)) {
+    mapInst.panTo(toTLngLat(sampled));
+    showToast("已定位到最近采样坐标");
     return;
   }
   const path = orderedPoints.value;
@@ -807,14 +607,6 @@ function startSamplingLoop(withImmediate) {
   scheduleNextSample(SAMPLE_INTERVAL_MS);
 }
 
-async function sampleNow() {
-  if (!activeTask.value) return;
-  const ok = await recordSamplePoint();
-  if (!activeTask.value) return;
-  scheduleNextSample(SAMPLE_INTERVAL_MS);
-  if (ok) showSuccessToast("已完成一次即时采样");
-}
-
 async function startPatrol() {
   if (points.value.length || events.value.length || endedTaskView.value) {
     try {
@@ -830,8 +622,6 @@ async function startPatrol() {
   points.value = [];
   events.value = [];
   lastSampleAt.value = 0;
-  liveTrailCoords.value = [];
-  stopLivePositionWatch();
   mapAutoViewportDone = false;
 
   gpsBusy.value = true;
@@ -856,8 +646,6 @@ async function startPatrol() {
   };
   await putRecord(stores.patrolTasks, task);
   activeTask.value = task;
-  liveTrailCoords.value = [];
-  startLivePositionWatch();
   showSuccessToast("已开始巡护");
   startSamplingLoop(true);
 }
@@ -870,8 +658,6 @@ async function stopPatrol() {
     return;
   }
   clearSamplingTimer();
-  stopLivePositionWatch();
-  liveTrailCoords.value = [];
   const taskId = activeTask.value.local_id;
   const trackSnapshot = [...orderedPoints.value];
   const ended = {
@@ -898,7 +684,6 @@ async function restoreActivePatrol() {
     await loadPointsAndEvents(active.local_id);
     const latest = [...points.value].sort((a, b) => (b.recorded_at || 0) - (a.recorded_at || 0))[0];
     lastSampleAt.value = Number(latest?.recorded_at || 0);
-    startLivePositionWatch();
     startSamplingLoop(false);
     showToast("已恢复进行中的巡护");
   }
@@ -922,70 +707,9 @@ function coordinatesFromLastPointOrNull(maxAgeMs = 25 * 60 * 1000) {
   };
 }
 
-function freshDeviceCoordForEventOrNull() {
-  const w = latestDeviceCoord.value;
-  if (!w || !isValidLngLat(w)) return null;
-  const age = Date.now() - Number(w.captured_at || 0);
-  if (age > 90000) return null;
-  const src = String(w.source || "");
-  const ok =
-    src === "gps_watch" ||
-    src === "gps_sample" ||
-    src === "gps" ||
-    src === "gps_live_event";
-  if (!ok) return null;
-  const outSource =
-    src === "gps_watch" ? "gps_watch" : src === "gps_sample" ? "gps_sample" : src === "gps_live_event" ? "gps_live_event" : "gps";
-  return {
-    lat: Number(w.lat),
-    lng: Number(w.lng),
-    accuracy: Number(w.accuracy || 0),
-    source: outSource,
-  };
-}
-
 async function resolveCoordsForEvent() {
-  const fresh = freshDeviceCoordForEventOrNull();
-  if (fresh) return fresh;
-
-  const trailTtl = activeTask.value ? 4 * 60 * 60 * 1000 : 25 * 60 * 1000;
-  const fromTrailEarly = coordinatesFromLastPointOrNull(trailTtl);
-  if (fromTrailEarly) return fromTrailEarly;
-
-  try {
-    const pos = await getQuickPositionForEvent(11000);
-    const lat = Number(pos.coords.latitude);
-    const lng = Number(pos.coords.longitude);
-    const accuracy = Number(pos.coords.accuracy || 0);
-    if (!isValidLngLat({ lat, lng })) throw new Error("bad_coord");
-    latestDeviceCoord.value = {
-      lat,
-      lng,
-      accuracy,
-      source: "gps_live_event",
-      captured_at: Date.now(),
-    };
-    return { lat, lng, accuracy, source: "gps_quick" };
-  } catch {}
-
-  try {
-    const pos = await getHighAccuracySnapshot();
-    const lat = Number(pos.coords.latitude);
-    const lng = Number(pos.coords.longitude);
-    const accuracy = Number(pos.coords.accuracy || 0);
-    if (!isValidLngLat({ lat, lng })) throw new Error("bad_coord");
-    latestDeviceCoord.value = {
-      lat,
-      lng,
-      accuracy,
-      source: "gps_live_event",
-      captured_at: Date.now(),
-    };
-    return { lat, lng, accuracy, source: "gps_live" };
-  } catch {}
-
-  const fromTrailLoose = coordinatesFromLastPointOrNull(366 * 24 * 60 * 60 * 1000);
-  if (fromTrailLoose) return fromTrailLoose;
+  const fromTrack = coordinatesFromLastPointOrNull(366 * 24 * 60 * 60 * 1000);
+  if (fromTrack) return fromTrack;
   throw new Error("bad_coord");
 }
 
@@ -1187,7 +911,7 @@ function setupMapVisibilityRecovery() {
       } catch {}
       if (mapInst && TMapCtor) redrawMapLayers();
       const gap = lastHiddenAt ? Date.now() - lastHiddenAt : 0;
-      if (gap > 45_000 && activeTask.value) startLivePositionWatch();
+      if (gap > 45_000 && activeTask.value) startSamplingLoop(false);
     });
   };
   const onVis = () => {
@@ -1223,7 +947,6 @@ onUnmounted(() => {
   unbindMapVisibility();
   clearSamplingTimer();
   stopPlayback();
-  stopLivePositionWatch();
   destroyMap();
 });
 </script>
@@ -1245,7 +968,7 @@ onUnmounted(() => {
 
       <div class="map-wrap">
         <p class="hint tight">
-          事件随时写入本机；轨迹在「结束巡护」时整条写入任务记录。巡护进行中轨迹仅存本页内存，刷新会丢失。网络短暂波动不会立刻切离线地图；定位在后台较久后会自动恢复 watch。
+          事件随时写入本机；轨迹在「结束巡护」时整条写入任务记录。巡护进行中轨迹仅存本页内存，刷新会丢失。网络短暂波动不会立刻切离线地图；定位按每10秒采样一次持续记录。
         </p>
         <div class="stats-chip">{{ patrolStatsText }}</div>
         <div v-if="mapError" class="map-fallback">
@@ -1285,9 +1008,6 @@ onUnmounted(() => {
         <div class="map-legend map-legend-lines">
           <span class="legend-title">图层</span>
           <span class="legend-item"><span class="legend-line solid" />已记录轨迹</span>
-          <span class="legend-item"><span class="legend-line dash" />实时 watch</span>
-          <span class="legend-item"><span class="legend-dot cyan" />实时采样点</span>
-          <span class="legend-item"><span class="legend-dot blue" />当前位置</span>
         </div>
         <div class="map-legend">
           <span class="legend-title">事件</span>
@@ -1316,7 +1036,6 @@ onUnmounted(() => {
           <van-button type="danger" block plain @click="stopPatrol">结束巡护</van-button>
           <van-button type="warning" block plain @click="openEventSheet">标记事件</van-button>
           <van-button type="primary" block plain :loading="eventSaveBusy" @click="quickRecordAnomaly">一键异常</van-button>
-          <van-button type="default" block plain :loading="sampleBusy" @click="sampleNow">立即采样</van-button>
         </template>
       </div>
 
@@ -1348,7 +1067,7 @@ onUnmounted(() => {
     v-model:show="quickEventSheetVisible"
     teleport="body"
     title="一键记录异常"
-    description="优先用地图上实时位置；否则按高精度定位或最近轨迹点。"
+    description="使用最近一次10秒采样轨迹点作为事件坐标。"
     :actions="EVENT_TYPES.map((t) => ({ name: t.label, value: t.value, color: t.color }))"
     close-on-click-action
     cancel-text="取消"
@@ -1562,14 +1281,6 @@ onUnmounted(() => {
   border-radius: 999px;
 }
 
-.legend-dot.blue {
-  background: #1989fa;
-}
-
-.legend-dot.cyan {
-  background: #69c0ff;
-}
-
 .map-legend-lines {
   margin-bottom: 6px;
 }
@@ -1581,11 +1292,6 @@ onUnmounted(() => {
   border-top: 3px solid #07c160;
   vertical-align: middle;
   margin-right: 2px;
-}
-
-.legend-line.dash {
-  border-top-style: dashed;
-  border-top-color: #1890ff;
 }
 
 .legend-line.solid {
