@@ -713,8 +713,11 @@ async function answerPendingQuestionsNow() {
 }
 
 async function removePendingQuestion(localId) {
-  const ok = window.confirm("确认删除这条待补答问题？");
-  if (!ok) return;
+  try {
+    await showConfirmDialog({ title: "确认删除", message: "确认删除这条待补答问题？" });
+  } catch {
+    return;
+  }
   await deleteRecord(stores.qaPendingQuestions, localId);
   await refreshLocal();
   showSuccessToast("已删除待补答问题");

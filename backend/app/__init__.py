@@ -35,8 +35,6 @@ def create_app() -> Flask:
     app.register_blueprint(patrol_bp, url_prefix="/api/patrol")
 
     with app.app_context():
-        from . import models  # noqa: F401
-
         db.create_all()
         _ensure_sqlite_extra_schema()
         _seed_knowledge_docs()

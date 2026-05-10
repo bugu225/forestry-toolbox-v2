@@ -306,8 +306,6 @@ def knowledge_search():
         ranked.sort(key=lambda pair: pair[0], reverse=True)
         items = [entry for _, entry in ranked] or items
 
-    if not items:
-        items = POLICY_ITEMS
     return jsonify({"items": items})
 
 

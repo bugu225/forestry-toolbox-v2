@@ -1,6 +1,5 @@
 import { createApp } from "vue";
 import { createPinia } from "pinia";
-import Vant from "vant";
 import "vant/lib/index.css";
 
 import App from "./App.vue";
@@ -11,11 +10,13 @@ const app = createApp(App);
 const pinia = createPinia();
 app.use(pinia);
 app.use(router);
-app.use(Vant);
 
-let unbindNetworkListeners = () => {};
+app.config.errorHandler = (err) => {
+  console.error("[GlobalError]", err);
+};
+
 if (typeof window !== "undefined") {
-  unbindNetworkListeners = bindDebouncedNavigatorListeners(() => useNetworkStore());
+  bindDebouncedNavigatorListeners(() => useNetworkStore());
 }
 
 app.mount("#app");

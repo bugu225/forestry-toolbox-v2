@@ -31,10 +31,6 @@ const EVENT_TYPES = [
   { value: "other", label: "其他异常", color: "#1989fa" },
 ];
 
-function uid(prefix) {
-  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-}
-
 function formatTime(ts) {
   if (!ts) return "";
   const d = new Date(ts);
