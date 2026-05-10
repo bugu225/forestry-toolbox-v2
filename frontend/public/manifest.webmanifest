@@ -1,17 +1,13 @@
 {
   "name": "林业智能巡护助手",
   "short_name": "林业助手",
-  "description": "离线优先的林业巡护工具：知识问答、物种识别、轨迹巡护与事件上报",
   "id": "/",
   "start_url": "/",
   "scope": "/",
   "lang": "zh-CN",
-  "dir": "ltr",
   "display": "standalone",
-  "orientation": "portrait-primary",
   "theme_color": "#1989fa",
   "background_color": "#f0f2f5",
-  "categories": ["utilities", "productivity"],
   "icons": [
     {
       "src": "/pwa-192.png",
@@ -22,50 +18,6 @@
       "src": "/pwa-512.png",
       "sizes": "512x512",
       "type": "image/png"
-    },
-    {
-      "src": "/pwa-512.png",
-      "sizes": "512x512",
-      "type": "image/png",
-      "purpose": "maskable"
-    }
-  ],
-  "shortcuts": [
-    {
-      "name": "知识问答",
-      "short_name": "问答",
-      "description": "林业知识问答与知识检索",
-      "url": "/qa",
-      "icons": [
-        {
-          "src": "/pwa-192.png",
-          "sizes": "192x192"
-        }
-      ]
-    },
-    {
-      "name": "林业识图",
-      "short_name": "识图",
-      "description": "拍照识别植物与动物",
-      "url": "/identify",
-      "icons": [
-        {
-          "src": "/pwa-192.png",
-          "sizes": "192x192"
-        }
-      ]
-    },
-    {
-      "name": "巡护助手",
-      "short_name": "巡护",
-      "description": "GPS 轨迹记录与事件上报",
-      "url": "/patrol",
-      "icons": [
-        {
-          "src": "/pwa-192.png",
-          "sizes": "192x192"
-        }
-      ]
     }
   ]
 }

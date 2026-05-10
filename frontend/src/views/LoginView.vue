@@ -4,6 +4,7 @@ import { useRouter } from "vue-router";
 import { showFailToast, showSuccessToast } from "vant";
 
 import { useAuthStore } from "../stores/auth";
+import { APP_VERSION, BUILD_DATE } from "../version";
 
 const router = useRouter();
 const authStore = useAuthStore();
@@ -65,6 +66,7 @@ async function submit() {
         </van-button>
       </div>
     </van-form>
+    <p class="version-tag">{{ APP_VERSION }} · {{ BUILD_DATE }}</p>
   </div>
 </template>
 
@@ -88,5 +90,12 @@ async function submit() {
 
 .actions {
   margin: 20px 16px 0;
+}
+
+.version-tag {
+  text-align: center;
+  margin: 32px 0 0;
+  font-size: 12px;
+  color: #c8c9cc;
 }
 </style>
