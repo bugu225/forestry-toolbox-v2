@@ -1,17 +1,10 @@
 export async function extractTextFromPdfFile(file) {
   const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  try {
-    // Force no-worker mode to avoid runtime .mjs worker loading issues in some deployments.
-    pdfjsLib.disableWorker = true;
-    if (pdfjsLib?.GlobalWorkerOptions) {
-      pdfjsLib.GlobalWorkerOptions.workerSrc = "";
-    }
-  } catch {
-    // ignore
-  }
+  const pdfjsWorkerUrl = (await import("pdfjs-dist/build/pdf.worker.min.mjs?url")).default;
+  pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
 
   const data = new Uint8Array(await file.arrayBuffer());
-  const pdf = await pdfjsLib.getDocument({ data, disableWorker: true }).promise;
+  const pdf = await pdfjsLib.getDocument({ data }).promise;
   const parts = [];
   const maxPages = 200;
   const n = Math.min(pdf.numPages, maxPages);

@@ -42,6 +42,21 @@ if ("serviceWorker" in navigator) {
             }
           });
         });
+
+        let updateCheckTimer = null;
+        const checkForUpdate = () => {
+          if (updateCheckTimer) clearTimeout(updateCheckTimer);
+          updateCheckTimer = setTimeout(() => {
+            registration.update().catch(() => {});
+          }, 1000);
+        };
+
+        document.addEventListener("visibilitychange", () => {
+          if (document.visibilityState === "visible") {
+            checkForUpdate();
+          }
+        });
+        window.addEventListener("online", checkForUpdate);
       })
       .catch((err) => {
         console.warn("[PWA] service worker register failed", err);
