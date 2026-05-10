@@ -10,6 +10,7 @@ import { loadTianditu } from "../services/tiandituLoader";
 import { exportPatrolPdfReport } from "../services/patrolPdfExport";
 import { deletePatrolPointsForTask, deleteRecord, getAllRecords, putRecord, stores } from "../services/offlineDb";
 import { describeGeoError, getCurrentPositionCompat, getHighAccuracySnapshot } from "../utils/geolocation";
+import { uid } from "../utils/uid";
 
 const networkStore = useNetworkStore();
 const { effectiveOnline } = storeToRefs(networkStore);
@@ -626,6 +627,7 @@ async function startPatrol() {
       showFailToast("当前设备不支持定位");
       return;
     }
+    showToast("正在获取定位，请允许定位权限…");
     await resolvePositionOnce();
   } catch (e) {
     showFailToast(describeGeoError(e, "无法开始巡护"));
