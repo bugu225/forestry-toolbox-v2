@@ -256,6 +256,9 @@ function knowledgeEntryMatchesSearch(row, kw) {
     row.summary,
     row.content,
     row.source_filename,
+    row.disease_or_theme,
+    row.prevention_methods,
+    row.applicable_regions,
     ...(Array.isArray(row.keywords) ? row.keywords : []),
   ]
     .map((x) => String(x || ""))
@@ -302,6 +305,10 @@ async function saveOrganizedKnowledgeItem(apiItem) {
     category: apiItem.category || "其他",
     keywords: Array.isArray(apiItem.keywords) ? apiItem.keywords : [],
     summary: apiItem.summary || "",
+    disease_or_theme: apiItem.disease_or_theme || "",
+    prevention_methods: apiItem.prevention_methods || "",
+    applicable_regions: apiItem.applicable_regions || "",
+    urgency_level: apiItem.urgency_level || "一般",
     content: apiItem.content || "",
     source_filename: apiItem.source_filename || "",
     organized_at: now,
@@ -317,7 +324,7 @@ async function onlineOrganizeAndSave() {
   }
   const text = (knowledgeImportDraft.value || "").trim();
   if (!text) {
-    showFailToast("请粘贴资料正文，或选择 .txt / .md / .csv / .pdf 文件");
+    showFailToast("请粘贴资料正文或选择文件");
     return;
   }
   knowledgeImportBusy.value = true;
@@ -342,10 +349,6 @@ async function onlineOrganizeAndSave() {
   }
 }
 
-function triggerKnowledgeFilePick() {
-  knowledgeFileInput.value?.click?.();
-}
-
 async function onKnowledgeFileChange(ev) {
   const file = ev.target.files?.[0];
   ev.target.value = "";
@@ -356,33 +359,27 @@ async function onKnowledgeFileChange(ev) {
     try {
       const { extractTextFromPdfFile } = await import("../utils/pdfText.js");
       const text = await extractTextFromPdfFile(file);
-      if (!text.trim()) {
-        showFailToast("未能从该 PDF 提取到文字（常见为扫描件或无文本层）");
-        return;
-      }
+      if (!text.trim()) { showFailToast("未能从该 PDF 提取到文字"); return; }
       knowledgeImportDraft.value = text;
       knowledgeImportFileName.value = file.name;
-      showSuccessToast(`已从 ${file.name} 提取文字，可继续编辑后整理保存`);
-    } catch (error) {
-      showFailToast(error?.message || "PDF 解析失败");
-    } finally {
-      knowledgeImportBusy.value = false;
-    }
+      showSuccessToast("已从 PDF 提取文字，可继续编辑后整理保存");
+    } catch (e) { showFailToast(e?.message || "PDF 解析失败"); }
+    finally { knowledgeImportBusy.value = false; }
     return;
   }
 
-  if (!/\.(txt|md|csv)$/i.test(file.name)) {
-    showFailToast("请选择 .txt / .md / .csv / .pdf 文件");
-    return;
-  }
   const reader = new FileReader();
   reader.onload = () => {
     knowledgeImportDraft.value = String(reader.result || "");
     knowledgeImportFileName.value = file.name;
-    showSuccessToast(`已载入 ${file.name}`);
+    showSuccessToast("已载入 " + file.name);
   };
   reader.onerror = () => showFailToast("文件读取失败");
   reader.readAsText(file, "UTF-8");
+}
+
+function triggerKnowledgeFilePick() {
+  knowledgeFileInput.value?.click?.();
 }
 
 function openKnowledgeDetail(row) {
@@ -851,8 +848,11 @@ onMounted(async () => {
             class="knowledge-row"
             @click="openKnowledgeDetail(it)"
           >
-            <span class="knowledge-row-title">{{ it.title }}</span>
-            <span class="knowledge-row-sum">{{ it.summary }}</span>
+            <span class="knowledge-row-title">
+              {{ it.title }}
+              <span v-if="it.urgency_level && it.urgency_level !== '一般'" class="k-urgency" :class="'k-urgency--' + it.urgency_level">{{ it.urgency_level }}</span>
+            </span>
+            <span class="knowledge-row-sum">{{ it.summary || it.disease_or_theme }}</span>
           </button>
         </section>
       </div>
@@ -871,9 +871,19 @@ onMounted(async () => {
           <h2 class="knowledge-detail-title">{{ knowledgeDetailRow.title }}</h2>
           <p class="knowledge-detail-meta">
             {{ knowledgeDetailRow.category }} · {{ knowledgeDetailRow.source_filename || "无文件名" }}
+            <span v-if="knowledgeDetailRow.urgency_level && knowledgeDetailRow.urgency_level !== '一般'" class="k-urgency-detail" :class="'k-urgency--' + knowledgeDetailRow.urgency_level">{{ knowledgeDetailRow.urgency_level }}</span>
           </p>
           <div class="knowledge-tags">
             <span v-for="(kw, idx) in knowledgeDetailRow.keywords || []" :key="idx" class="knowledge-tag">{{ kw }}</span>
+          </div>
+          <div v-if="knowledgeDetailRow.disease_or_theme" class="knowledge-field">
+            <strong>病害/主题：</strong>{{ knowledgeDetailRow.disease_or_theme }}
+          </div>
+          <div v-if="knowledgeDetailRow.prevention_methods" class="knowledge-field">
+            <strong>防治方法：</strong>{{ knowledgeDetailRow.prevention_methods }}
+          </div>
+          <div v-if="knowledgeDetailRow.applicable_regions" class="knowledge-field">
+            <strong>适用地区/树种：</strong>{{ knowledgeDetailRow.applicable_regions }}
           </div>
         </div>
         <div class="knowledge-detail-body">
@@ -1577,6 +1587,56 @@ onMounted(async () => {
   font-size: 12px;
   padding: 2px 8px;
   border-radius: 4px;
+  background: #ecf9ff;
+  color: #1989fa;
+}
+
+.knowledge-field {
+  margin-top: 6px;
+  font-size: 13px;
+  color: #323233;
+  line-height: 1.5;
+}
+
+.knowledge-field strong {
+  color: #646566;
+}
+
+.k-urgency {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: middle;
+}
+
+.k-urgency-detail {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.k-urgency--紧急 {
+  background: #fee0e0;
+  color: #ee0a24;
+}
+
+.k-urgency--较急 {
+  background: #fff2e0;
+  color: #ff976a;
+}
+
+.k-urgency--一般 {
+  background: #f2f3f5;
+  color: #646566;
+}
+
+.k-urgency--无紧急 {
   background: #ecf9ff;
   color: #1989fa;
 }

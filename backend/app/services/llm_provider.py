@@ -132,15 +132,29 @@ def organize_knowledge_document(raw_text: str, source_filename: str | None = Non
     text_for_model = full_text[:max_chars]
     fname = (source_filename or "").strip() or "未命名文件"
 
+    gate_on = current_app.config.get("LLM_FORESTRY_GATE_ENABLED", True)
+    if gate_on:
+        gate_text = full_text[:600]
+        if not classify_forestry_related(
+            f"请判断以下林业资料是否与林业工作相关，仅答是或否。\n{gate_text}",
+            conversation_snippet=None,
+        ):
+            raise ValueError("内容与林业无关，已自动跳过以节省资源。请导入林业相关资料。")
+
     cats = "、".join(FORESTRY_KNOWLEDGE_CATEGORIES)
     system_content = (
         "你是林业资料编目助手。根据用户提供的正文，提取结构化信息。"
         "category 必须从以下类目中选择其一（完全一致）："
-        f"{cats}。"
-        "若难以归类，选「其他」。"
+        f"{cats}。若难以归类，选「其他」。"
         "只输出一个 JSON 对象，不要 markdown 代码围栏，不要其它说明文字。"
-        '字段：title（≤40字）、category（上述之一）、keywords（3～8个字符串数组）、'
-        'summary（≤300字中文摘要，覆盖要点）。'
+        "字段："
+        "title（≤40字）、category（上述之一）、keywords（3～8个字符串数组）、"
+        "summary（≤300字中文摘要，覆盖要点）、"
+        "disease_or_theme（病虫害名或核心主题名，无则为空字符串）、"
+        "prevention_methods（防治或处理措施，用分号分隔，无则为空字符串）、"
+        "applicable_regions（适用地区或树种，用分号分隔，无则为空字符串）、"
+        "urgency_level（紧急程度：无紧急/一般/较急/紧急，默认一般）、"
+        "body_content（整理后的正文，去除冗余但保留原文关键信息，≤3000字）。"
     )
     user_content = (
         f"【文件名】{fname}\n\n【正文】\n{text_for_model}"
@@ -161,7 +175,7 @@ def organize_knowledge_document(raw_text: str, source_filename: str | None = Non
                 {"role": "user", "content": user_content},
             ],
             "temperature": 0.2,
-            "max_tokens": 900,
+            "max_tokens": 2200,
         },
         timeout=timeout,
     )
@@ -201,9 +215,17 @@ def organize_knowledge_document(raw_text: str, source_filename: str | None = Non
     if len(summary) > 500:
         summary = summary[:500]
 
+    disease_or_theme = str(data.get("disease_or_theme") or "").strip()
+    prevention_methods = str(data.get("prevention_methods") or "").strip()
+    applicable_regions = str(data.get("applicable_regions") or "").strip()
+    urgency_level = str(data.get("urgency_level") or "一般").strip()
+    if urgency_level not in ("无紧急", "一般", "较急", "紧急"):
+        urgency_level = "一般"
+
     content_cap = 150000
-    body = full_text[:content_cap]
-    if len(full_text) > content_cap:
+    body_content = str(data.get("body_content") or "").strip()
+    body = body_content if body_content else full_text[:content_cap]
+    if len(full_text) > content_cap and not body_content:
         summary = (summary + "（正文过长，已截断保存）")[:500]
 
     return {
@@ -211,6 +233,10 @@ def organize_knowledge_document(raw_text: str, source_filename: str | None = Non
         "category": category,
         "keywords": keywords,
         "summary": summary,
+        "disease_or_theme": disease_or_theme,
+        "prevention_methods": prevention_methods,
+        "applicable_regions": applicable_regions,
+        "urgency_level": urgency_level,
         "content": body,
         "source_filename": fname,
     }
