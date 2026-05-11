@@ -1,5 +1,10 @@
 <template>
-  <router-view />
+  <div class="app-root">
+    <router-view />
+    <footer class="site-footer">
+      <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">豫ICP备2026018815号-1</a>
+    </footer>
+  </div>
 </template>
 
 <script setup>
@@ -50,5 +55,34 @@ body {
   min-height: -webkit-fill-available;
   max-width: 100%;
   box-sizing: border-box;
+}
+
+.site-footer {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  text-align: center;
+  padding: 6px 0 calc(env(safe-area-inset-bottom, 6px));
+  font-size: 11px;
+  color: #c0c0c0;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  border-top: 1px solid #f0f0f0;
+  z-index: 999;
+}
+
+.site-footer a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.site-footer a:hover {
+  color: #1989fa;
+}
+
+.app-root {
+  padding-bottom: 28px;
 }
 </style>

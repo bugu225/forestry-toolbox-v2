@@ -16,13 +16,13 @@ const router = useRouter();
 
 const moreActive = ref([]);
 
-const username = computed(() => authStore.user?.username || "用户");
+const username = computed(() => authStore.user?.username || "\u7528\u6237");
 
 const networkHint = computed(() => {
   if (simulateOffline.value) {
-    return "模拟断网中（本应用内视为离线，用于测试）";
+    return "\u6a21\u62df\u65ad\u7f51\u4e2d\uff08\u672c\u5e94\u7528\u5185\u89c6\u4e3a\u79bb\u7ebf\uff0c\u7528\u4e8e\u6d4b\u8bd5\uff09";
   }
-  return effectiveOnline.value ? "当前网络：在线" : "当前网络：离线";
+  return effectiveOnline.value ? "\u5f53\u524d\u7f51\u7edc\uff1a\u5728\u7ebf" : "\u5f53\u524d\u7f51\u7edc\uff1a\u79bb\u7ebf";
 });
 
 const isStandaloneDisplay = computed(() => {
@@ -78,44 +78,44 @@ const showPwaTip = computed(() => {
 
 const pwaHintBody = computed(() => {
   if (isBaiduBrowser.value) {
-    return "百度手机浏览器通常不会出现系统级「安装」弹窗。请点击下方「查看添加桌面步骤」，或打开浏览器菜单查找「添加到桌面」「桌面快捷方式」等选项（不同版本文案略有差异）。";
+    return "\u767e\u5ea6\u624b\u673a\u6d4f\u89c8\u5668\u901a\u5e38\u4e0d\u4f1a\u51fa\u73b0\u7cfb\u7edf\u7ea7\u300c\u5b89\u88c5\u300d\u5f39\u7a97\u3002\u8bf7\u70b9\u51fb\u4e0b\u65b9\u300c\u67e5\u770b\u6dfb\u52a0\u684c\u9762\u6b65\u9aa4\u300d\uff0c\u6216\u6253\u5f00\u6d4f\u89c8\u5668\u83dc\u5355\u67e5\u627e\u300c\u6dfb\u52a0\u5230\u684c\u9762\u300d\u300c\u684c\u9762\u5feb\u6377\u65b9\u5f0f\u300d\u7b49\u9009\u9879\uff08\u4e0d\u540c\u7248\u672c\u6587\u6848\u7565\u6709\u5dee\u5f02\uff09\u3002";
   }
   if (isIOS) {
-    return "点 Safari 底栏「分享」图标，选择「添加到主屏幕」并确认。从主屏幕图标打开时，离线缓存与全屏体验更好。";
+    return "\u70b9 Safari \u5e95\u680f\u300c\u5206\u4eab\u300d\u56fe\u6807\uff0c\u9009\u62e9\u300c\u6dfb\u52a0\u5230\u4e3b\u5c4f\u5e55\u300d\u5e76\u786e\u8ba4\u3002\u4ece\u4e3b\u5c4f\u5e55\u56fe\u6807\u6253\u5f00\u65f6\uff0c\u79bb\u7ebf\u7f13\u5b58\u4e0e\u5168\u5c4f\u4f53\u9a8c\u66f4\u597d\u3002";
   }
   if (isAndroid) {
     return canNativeInstall.value
-      ? "点击下方按钮可将本应用添加到手机桌面，打开后更接近原生应用，离线访问更稳定。"
-      : "点自带浏览器菜单（⋮，多在右上或底栏），选「添加到主屏幕」或「安装应用」。从主屏幕图标打开，离线用问答、识图、巡护更顺畅。";
+      ? "\u70b9\u51fb\u4e0b\u65b9\u6309\u94ae\u53ef\u5c06\u672c\u5e94\u7528\u6dfb\u52a0\u5230\u624b\u673a\u684c\u9762\uff0c\u6253\u5f00\u540e\u66f4\u63a5\u8fd1\u539f\u751f\u5e94\u7528\uff0c\u79bb\u7ebf\u8bbf\u95ee\u66f4\u7a33\u5b9a\u3002"
+      : "\u70b9\u81ea\u5e26\u6d4f\u89c8\u5668\u83dc\u5355\uff08\u22ee\uff0c\u591a\u5728\u53f3\u4e0a\u6216\u5e95\u680f\uff09\uff0c\u9009\u300c\u6dfb\u52a0\u5230\u4e3b\u5c4f\u5e55\u300d\u6216\u300c\u5b89\u88c5\u5e94\u7528\u300d\u3002\u4ece\u4e3b\u5c4f\u5e55\u56fe\u6807\u6253\u5f00\uff0c\u79bb\u7ebf\u7528\u95ee\u7b54\u3001\u8bc6\u56fe\u3001\u5de1\u62a4\u66f4\u987a\u7545\u3002";
   }
-  return "点自带浏览器菜单（⋮），选「添加到主屏幕」或「安装应用」，固定到手机桌面，便于离线使用。";
+  return "\u70b9\u81ea\u5e26\u6d4f\u89c8\u5668\u83dc\u5355\uff08\u22ee\uff09\uff0c\u9009\u300c\u6dfb\u52a0\u5230\u4e3b\u5c4f\u5e55\u300d\u6216\u300c\u5b89\u88c5\u5e94\u7528\u300d\uff0c\u56fa\u5b9a\u5230\u624b\u673a\u684c\u9762\uff0c\u4fbf\u4e8e\u79bb\u7ebf\u4f7f\u7528\u3002";
 });
 
 function showAddToHomeInstructions() {
   let message = "";
   if (isBaiduBrowser.value) {
     message = [
-      "1. 点击浏览器底栏「菜单」或「≡」。",
-      "2. 查找「收藏网址」「添加书签到桌面」「桌面快捷方式」「添加卡片」等（不同版本名称不同）。",
-      "3. 若找不到，可尝试菜单里的「工具箱」或「更多工具」中是否有「添加到主屏幕」。",
-      "4. 仍无法添加时，建议用 Chrome、Edge 或系统自带浏览器打开本站后再试。",
+      "1. \u70b9\u51fb\u6d4f\u89c8\u5668\u5e95\u680f\u300c\u83dc\u5355\u300d\u6216\u300c\u2261\u300d\u3002",
+      "2. \u67e5\u627e\u300c\u6536\u85cf\u7f51\u5740\u300d\u300c\u6dfb\u52a0\u4e66\u7b7e\u5230\u684c\u9762\u300d\u300c\u684c\u9762\u5feb\u6377\u65b9\u5f0f\u300d\u300c\u6dfb\u52a0\u5361\u7247\u300d\u7b49\uff08\u4e0d\u540c\u7248\u672c\u540d\u79f0\u4e0d\u540c\uff09\u3002",
+      "3. \u82e5\u627e\u4e0d\u5230\uff0c\u53ef\u5c1d\u8bd5\u83dc\u5355\u91cc\u7684\u300c\u5de5\u5177\u7bb1\u300d\u6216\u300c\u66f4\u591a\u5de5\u5177\u300d\u4e2d\u662f\u5426\u6709\u300c\u6dfb\u52a0\u5230\u4e3b\u5c4f\u5e55\u300d\u3002",
+      "4. \u4ecd\u65e0\u6cd5\u6dfb\u52a0\u65f6\uff0c\u5efa\u8bae\u7528 Chrome\u3001Edge \u6216\u7cfb\u7edf\u81ea\u5e26\u6d4f\u89c8\u5668\u6253\u5f00\u672c\u7ad9\u540e\u518d\u8bd5\u3002",
     ].join("\n");
   } else if (isIOS) {
     message =
-      "在 Safari 中：点底栏「分享」↑ 按钮 → 下滑找到「添加到主屏幕」→ 编辑名称后点「添加」。从主屏幕图标打开可获得更接近全屏的体验。";
+      "\u5728 Safari \u4e2d\uff1a\u70b9\u5e95\u680f\u300c\u5206\u4eab\u300d\u2191 \u6309\u94ae \u2192 \u4e0b\u6ed1\u627e\u5230\u300c\u6dfb\u52a0\u5230\u4e3b\u5c4f\u5e55\u300d\u2192 \u7f16\u8f91\u540d\u79f0\u540e\u70b9\u300c\u6dfb\u52a0\u300d\u3002\u4ece\u4e3b\u5c4f\u5e55\u56fe\u6807\u6253\u5f00\u53ef\u83b7\u5f97\u66f4\u63a5\u8fd1\u5168\u5c4f\u7684\u4f53\u9a8c\u3002";
   } else if (isAndroid) {
     message = [
-      "1. 点浏览器右上角或底栏「菜单」（⋮）。",
-      "2. 选择「添加到主屏幕」「安装应用」或「添加快捷方式」。",
-      "3. 若无此选项，多为厂商定制浏览器限制，可换 Chrome / 系统浏览器打开本站。",
+      "1. \u70b9\u6d4f\u89c8\u5668\u53f3\u4e0a\u89d2\u6216\u5e95\u680f\u300c\u83dc\u5355\u300d\uff08\u22ee\uff09\u3002",
+      "2. \u9009\u62e9\u300c\u6dfb\u52a0\u5230\u4e3b\u5c4f\u5e55\u300d\u300c\u5b89\u88c5\u5e94\u7528\u300d\u6216\u300c\u6dfb\u52a0\u5feb\u6377\u65b9\u5f0f\u300d\u3002",
+      "3. \u82e5\u65e0\u6b64\u9009\u9879\uff0c\u591a\u4e3a\u5382\u5546\u5b9a\u5236\u6d4f\u89c8\u5668\u9650\u5236\uff0c\u53ef\u6362 Chrome / \u7cfb\u7edf\u6d4f\u89c8\u5668\u6253\u5f00\u672c\u7ad9\u3002",
     ].join("\n");
   } else {
-    message = "请使用浏览器菜单中的「添加到主屏幕」或「安装」功能，将本站固定到桌面。";
+    message = "\u8bf7\u4f7f\u7528\u6d4f\u89c8\u5668\u83dc\u5355\u4e2d\u7684\u300c\u6dfb\u52a0\u5230\u4e3b\u5c4f\u5e55\u300d\u6216\u300c\u5b89\u88c5\u300d\u529f\u80fd\uff0c\u5c06\u672c\u7ad9\u56fa\u5b9a\u5230\u684c\u9762\u3002";
   }
   showDialog({
-    title: "添加到手机桌面",
+    title: "\u6dfb\u52a0\u5230\u624b\u673a\u684c\u9762",
     message,
-    confirmButtonText: "知道了",
+    confirmButtonText: "\u77e5\u9053\u4e86",
     messageAlign: "left",
   });
 }
@@ -129,7 +129,7 @@ function dismissPwaTip() {
 
 async function onNativeInstallClick() {
   if (!deferredInstallPrompt) {
-    showToast({ message: "请点菜单（⋮）选择「安装」或「添加到主屏幕」", position: "middle" });
+    showToast({ message: "\u8bf7\u70b9\u83dc\u5355\uff08\u22ee\uff09\u9009\u62e9\u300c\u5b89\u88c5\u300d\u6216\u300c\u6dfb\u52a0\u5230\u4e3b\u5c4f\u5e55\u300d", position: "middle" });
     return;
   }
   try {
@@ -138,11 +138,11 @@ async function onNativeInstallClick() {
     deferredInstallPrompt = null;
     canNativeInstall.value = false;
     if (choice?.outcome === "accepted") {
-      showToast({ message: "已开始安装，请按系统提示完成", position: "middle" });
+      showToast({ message: "\u5df2\u5f00\u59cb\u5b89\u88c5\uff0c\u8bf7\u6309\u7cfb\u7edf\u63d0\u793a\u5b8c\u6210", position: "middle" });
       dismissPwaTip();
     }
   } catch {
-    showToast({ message: "安装流程被中断，可稍后在菜单中重试", position: "middle" });
+    showToast({ message: "\u5b89\u88c5\u6d41\u7a0b\u88ab\u4e2d\u65ad\uff0c\u53ef\u7a0d\u540e\u5728\u83dc\u5355\u4e2d\u91cd\u8bd5", position: "middle" });
   }
 }
 
@@ -166,203 +166,95 @@ function logout() {
 function onSimulateOfflineChange(checked) {
   networkStore.setSimulateOffline(checked);
   showToast({
-    message: checked ? "已开启模拟断网" : "已恢复为真实网络状态",
+    message: checked ? "\u5df2\u5f00\u542f\u6a21\u62df\u65ad\u7f51" : "\u5df2\u6062\u590d\u4e3a\u771f\u5b9e\u7f51\u7edc\u72b6\u6001",
     position: "bottom",
   });
 }
 
-function requestLocationPermission() {
-  if (!navigator.geolocation) {
-    showToast({ message: "当前设备不支持定位能力", position: "middle" });
-    return;
-  }
-  getCurrentPositionCompat()
-    .then(() => {
-      showToast({
-        message: "已获取到位置（GPS 或网络定位），巡护与拍摄可自动填经纬度。",
-        position: "middle",
-      });
-    })
-    .catch((error) => {
-      showToast({ message: describeGeoError(error, "定位申请失败，请稍后重试"), position: "middle" });
-    });
-}
-
 function normalizeCheck(ok, detail) {
-  return `${ok ? "✅" : "❌"} ${detail}`;
-}
-
-async function checkApiReachable(label, action) {
-  try {
-    const res = await action();
-    return normalizeCheck(true, `${label}：可用（${res}）`);
-  } catch (error) {
-    const code = Number(error?.response?.status || error?.status || 0);
-    const msg = code ? `HTTP ${code}` : (error?.message || "请求失败");
-    if ([400, 401, 403, 404, 405].includes(code)) {
-      return normalizeCheck(true, `${label}：链路可达（${msg}）`);
-    }
-    return normalizeCheck(false, `${label}：不可用（${msg}）`);
-  }
+  return (ok ? "\u2705 " : "\u274c ") + detail;
 }
 
 async function runAllInOneDiagnostics() {
   const lines = [];
-  const secure = typeof window !== "undefined" ? Boolean(window.isSecureContext) : false;
-  lines.push(`网络状态：${effectiveOnline.value ? "在线" : "离线"}`);
-  lines.push(`HTTPS 安全上下文：${secure ? "是" : "否"}`);
-  lines.push("");
-  lines.push("权限与设备：");
 
-  let geoPermissionText = "未知";
+  lines.push("\u7f51\u7edc\u8fde\u63a5\uff1a" + (effectiveOnline.value ? "\u6b63\u5e38" : "\u5df2\u65ad\u5f00"));
+
+  let geoPermFriendly = "\u672a\u6388\u6743";
   if (navigator.permissions?.query) {
     try {
       const status = await navigator.permissions.query({ name: "geolocation" });
-      geoPermissionText = status?.state || "unknown";
-    } catch {
-      geoPermissionText = "浏览器不返回（正常）";
-    }
-  } else {
-    geoPermissionText = "当前浏览器不支持 Permissions API";
+      const map = { granted: "\u5df2\u6388\u6743", denied: "\u5df2\u62d2\u7edd", prompt: "\u5f85\u8be2\u95ee" };
+      geoPermFriendly = map[status?.state] || "\u672a\u77e5";
+    } catch {}
   }
-  lines.push(`- 定位权限：${geoPermissionText}`);
+  lines.push("\u4f4d\u7f6e\u6743\u9650\uff1a" + geoPermFriendly);
 
-  let camPermissionText = "未知";
+  let camPermFriendly = "\u672a\u6388\u6743";
   if (navigator.permissions?.query) {
     try {
       const status = await navigator.permissions.query({ name: "camera" });
-      camPermissionText = status?.state || "unknown";
-    } catch {
-      camPermissionText = "浏览器不返回（正常）";
-    }
-  } else {
-    camPermissionText = "当前浏览器不支持 Permissions API";
+      const map = { granted: "\u5df2\u6388\u6743", denied: "\u5df2\u62d2\u7edd", prompt: "\u5f85\u8be2\u95ee" };
+      camPermFriendly = map[status?.state] || "\u672a\u77e5";
+    } catch {}
   }
-  lines.push(`- 相机权限：${camPermissionText}`);
+  lines.push("\u76f8\u673a\u6743\u9650\uff1a" + camPermFriendly);
 
   const hasGeo = typeof navigator !== "undefined" && Boolean(navigator.geolocation);
-  lines.push(`- 浏览器定位能力：${hasGeo ? "支持" : "不支持"}`);
   if (hasGeo) {
     try {
       const pos = await getCurrentPositionCompat();
       const acc = Number(pos?.coords?.accuracy || 0);
-      lines.push(normalizeCheck(true, `实时定位测试通过（精度约 ${Number.isFinite(acc) ? Math.round(acc) : "—"}m）`));
+      const accText = Number.isFinite(acc) ? "\uff08\u7cbe\u5ea6\u7ea6 " + Math.round(acc) + " \u7c73\uff09" : "";
+      lines.push(normalizeCheck(true, "\u5b9a\u4f4d\u529f\u80fd\u6b63\u5e38" + accText));
     } catch (error) {
-      lines.push(normalizeCheck(false, `实时定位测试失败（${describeGeoError(error, "未知错误")}）`));
+      lines.push(normalizeCheck(false, "\u5b9a\u4f4d\u5931\u8d25\uff1a" + describeGeoError(error, "\u8bf7\u68c0\u67e5\u624b\u673a\u5b9a\u4f4d\u5f00\u5173\u548c\u6d4f\u89c8\u5668\u4f4d\u7f6e\u6743\u9650")));
     }
   } else {
-    lines.push(normalizeCheck(false, "实时定位测试失败（浏览器不支持 geolocation）"));
+    lines.push(normalizeCheck(false, "\u5b9a\u4f4d\u4e0d\u53ef\u7528\uff1a\u5f53\u524d\u6d4f\u89c8\u5668\u4e0d\u652f\u6301\u4f4d\u7f6e\u670d\u52a1"));
   }
 
   const hasCameraApi = Boolean(navigator.mediaDevices?.getUserMedia);
-  lines.push(`- 浏览器相机能力：${hasCameraApi ? "支持" : "不支持"}`);
   if (hasCameraApi) {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true });
       for (const t of stream.getTracks()) t.stop();
-      lines.push(normalizeCheck(true, "相机可调用（已成功获取视频流）"));
+      lines.push(normalizeCheck(true, "\u62cd\u7167\u529f\u80fd\u6b63\u5e38"));
     } catch (error) {
-      lines.push(normalizeCheck(false, `相机调用失败（${error?.name || "未知错误"}）`));
+      const hint = error?.name === "NotAllowedError" ? "\u76f8\u673a\u6743\u9650\u88ab\u62d2\u7edd" : (error?.name || "\u672a\u77e5\u9519\u8bef");
+      lines.push(normalizeCheck(false, "\u62cd\u7167\u4e0d\u53ef\u7528\uff1a" + hint));
     }
   } else {
-    lines.push(normalizeCheck(false, "相机调用失败（浏览器不支持媒体设备 API）"));
+    lines.push(normalizeCheck(false, "\u62cd\u7167\u4e0d\u53ef\u7528\uff1a\u5f53\u524d\u6d4f\u89c8\u5668\u4e0d\u652f\u6301\u76f8\u673a"));
   }
 
   lines.push("");
-  lines.push("接口连通性：");
-  lines.push(
-    await checkApiReachable("健康检查 /api/health", async () => {
-      const res = await fetch("/api/health", { credentials: "same-origin" });
-      return `HTTP ${res.status}`;
-    })
-  );
-  lines.push(
-    await checkApiReachable("地图配置 /api/public/client-config", async () => {
-      const res = await fetch("/api/public/client-config", { credentials: "same-origin" });
-      return `HTTP ${res.status}`;
-    })
-  );
-  lines.push(
-    await checkApiReachable("问答接口 /api/qa/sessions", async () => {
-      const res = await apiClient.get("/qa/sessions", { timeout: 10000 });
-      return `HTTP ${res.status}`;
-    })
-  );
-  lines.push(
-    await checkApiReachable("识图接口 /api/identify/sync", async () => {
-      const res = await apiClient.post("/identify/sync", { jobs: [] }, { timeout: 10000 });
-      return `HTTP ${res.status}`;
-    })
-  );
+  lines.push("\u670d\u52a1\u8fde\u63a5\uff1a");
+  const apiChecks = [
+    { label: "\u77e5\u8bc6\u95ee\u7b54", run: () => apiClient.get("/qa/sessions", { timeout: 10000 }) },
+    { label: "\u6797\u4e1a\u8bc6\u56fe", run: () => apiClient.post("/identify/sync", { jobs: [] }, { timeout: 10000 }) },
+  ];
+  for (const { label, run } of apiChecks) {
+    try {
+      await run();
+      lines.push(normalizeCheck(true, label));
+    } catch (error) {
+      const code = Number(error?.response?.status || error?.status || 0);
+      const hint = code === 401 ? "\u9700\u91cd\u65b0\u767b\u5f55" : code ? "\u5f02\u5e38(" + code + ")" : "\u7f51\u7edc\u4e0d\u901a";
+      lines.push(normalizeCheck(false, label + "\uff1a" + hint));
+    }
+  }
 
   lines.push("");
-  lines.push("建议：");
-  lines.push("1. 若定位或相机失败，请先检查系统设置中的浏览器权限；");
-  lines.push("2. 若 API 不可用，请检查后端服务、反向代理和 token 登录状态；");
-  lines.push("3. 若地图配置失败，请确认 /api/public/client-config 已正常返回。");
+  lines.push("\u5982\u67d0\u9879\u68c0\u6d4b\u672a\u901a\u8fc7\uff0c\u53ef\u5c1d\u8bd5\uff1a");
+  lines.push("1. \u5728\u624b\u673a\u300c\u8bbe\u7f6e\u300d\u4e2d\u5f00\u542f\u672c\u5e94\u7528\u7684\u5b9a\u4f4d\u548c\u76f8\u673a\u6743\u9650\uff1b");
+  lines.push("2. \u68c0\u67e5\u624b\u673a\u7f51\u7edc\uff0c\u5207\u6362\u5230\u7a33\u5b9a\u7684 WiFi \u6216\u79fb\u52a8\u6570\u636e\uff1b");
+  lines.push("3. \u9000\u51fa\u8d26\u53f7\u540e\u91cd\u65b0\u767b\u5f55\u518d\u8bd5\u3002");
 
   showDialog({
-    title: "一键检测结果",
+    title: "\u4e00\u952e\u68c0\u6d4b",
     message: lines.join("\n"),
-    confirmButtonText: "我知道了",
-    messageAlign: "left",
-  });
-}
-
-async function showLocationDiagnostics() {
-  const lines = [];
-  const secure = typeof window !== "undefined" ? Boolean(window.isSecureContext) : false;
-  const onlineState = effectiveOnline.value ? "在线" : "离线";
-  const hasGeo = typeof navigator !== "undefined" && Boolean(navigator.geolocation);
-  const uaText = typeof navigator !== "undefined" ? String(navigator.userAgent || "") : "";
-  const isChrome = /Chrome\/\d+/i.test(uaText);
-  const isAndroidChrome = isChrome && /Android/i.test(uaText);
-
-  lines.push(`网络状态：${onlineState}`);
-  lines.push(`安全上下文（HTTPS）：${secure ? "是" : "否"}`);
-  lines.push(`浏览器定位能力：${hasGeo ? "支持" : "不支持"}`);
-  lines.push(`浏览器识别：${isAndroidChrome ? "Android Chrome" : isChrome ? "Chrome 系" : "其他"}`);
-
-  if (navigator.permissions?.query) {
-    try {
-      const status = await navigator.permissions.query({ name: "geolocation" });
-      lines.push(`定位权限状态：${status?.state || "unknown"}`);
-    } catch {
-      lines.push("定位权限状态：浏览器不返回（正常）");
-    }
-  } else {
-    lines.push("定位权限状态：当前浏览器不支持 Permissions API");
-  }
-
-  if (!hasGeo) {
-    lines.push("实时定位测试：失败（浏览器不支持 geolocation）");
-  } else {
-    try {
-      const pos = await getCurrentPositionCompat();
-      const lat = Number(pos?.coords?.latitude);
-      const lng = Number(pos?.coords?.longitude);
-      const acc = Number(pos?.coords?.accuracy);
-      lines.push(
-        `实时定位测试：成功（经度 ${Number.isFinite(lng) ? lng.toFixed(5) : "—"}，纬度 ${
-          Number.isFinite(lat) ? lat.toFixed(5) : "—"
-        }，精度约 ${Number.isFinite(acc) ? Math.round(acc) : "—"}m）`
-      );
-    } catch (error) {
-      lines.push(`实时定位测试：失败（${describeGeoError(error, "未知错误")}）`);
-    }
-  }
-
-  lines.push("");
-  lines.push("建议：");
-  lines.push("1. 手机系统里开启“高精度定位（GPS+WLAN+移动网络）”；");
-  lines.push("2. 关闭省电模式，给 Chrome 允许“位置信息”权限；");
-  lines.push("3. 首次定位尽量在室外或窗边等待 10-20 秒；");
-  lines.push("4. 若仍失败，建议检查系统定位服务、网络状态或更换浏览器后重试。");
-
-  showDialog({
-    title: "定位诊断",
-    message: lines.join("\n"),
-    confirmButtonText: "我知道了",
+    confirmButtonText: "\u6211\u77e5\u9053\u4e86",
     messageAlign: "left",
   });
 }
@@ -460,9 +352,7 @@ onUnmounted(() => {
                 />
               </template>
             </van-cell>
-            <van-button type="primary" plain block @click="requestLocationPermission">申请定位权限</van-button>
-            <van-button type="success" plain block @click="runAllInOneDiagnostics">一键检测（权限/API）</van-button>
-            <van-button type="default" plain block @click="showLocationDiagnostics">定位诊断</van-button>
+            <van-button type="primary" plain block @click="runAllInOneDiagnostics">一键检测</van-button>
             <van-button class="more-logout" type="danger" block round @click="logout">退出登录</van-button>
           </div>
         </van-collapse-item>
