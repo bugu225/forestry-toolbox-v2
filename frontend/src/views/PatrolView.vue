@@ -21,7 +21,7 @@ const GOOD_ACCURACY_M = 50;
 const JUMP_CHECK_WINDOW_MS = 90 * 1000;
 const JUMP_DISTANCE_M = 900;
 const JUMP_SPEED_MPS = 55;
-const PLAYBACK_STEP_MS = 800;
+const PLAYBACK_SEGMENT_MS = 300;
 
 const EVENT_TYPES = [
   { value: "pest", label: "病虫害", color: "#722ed1" },
@@ -140,11 +140,14 @@ const trackDotMarkers = [];
 const eventMarkers = [];
 let playbackMarker = null;
 let playbackTimer = null;
+let playbackFraction = 0;
 const latestDeviceCoord = ref(null);
 let mapAutoViewportDone = false;
 
 const playbackIndex = ref(0);
 const playbackPlaying = ref(false);
+let playbackRafId = null;
+let playbackLastTime = 0;
 
 const showEventList = ref(true);
 const showTrackList = ref(true);
@@ -181,10 +184,15 @@ function clampPlaybackIndex() {
 
 watch(
   () => orderedPoints.value.length,
-  () => {
-    clampPlaybackIndex();
-  }
+  () => { clampPlaybackIndex(); }
 );
+
+watch(playbackIndex, () => {
+  playbackFraction = 0;
+  if (playbackPlaying.value) {
+    playbackLastTime = performance.now();
+  }
+});
 
 function clearMapOverlays() {
   if (!mapInst) return;
@@ -313,7 +321,12 @@ function redrawMapLayers() {
 
   const idx = playbackIndex.value;
   if (path.length && idx >= 0 && idx < path.length) {
-    const pos = path[idx];
+    let pos;
+    if (playbackPlaying.value && idx + 1 < path.length && playbackFraction > 0) {
+      pos = lerpLngLat(path[idx], path[idx + 1], Math.min(1, playbackFraction));
+    } else {
+      pos = path[idx];
+    }
     try {
       playbackMarker = new TMapCtor.Marker(pos);
       playbackMarker.setTitle("轨迹回放当前位置");
@@ -479,11 +492,19 @@ function refocusSelectedEventOnMap() {
 }
 
 function stopPlayback() {
-  if (playbackTimer) {
-    clearInterval(playbackTimer);
-    playbackTimer = null;
+  if (playbackRafId) {
+    cancelAnimationFrame(playbackRafId);
+    playbackRafId = null;
   }
   playbackPlaying.value = false;
+  playbackFraction = 0;
+}
+
+function lerpLngLat(a, b, t) {
+  return new TMapCtor.LngLat(
+    Number(a.lng) + (Number(b.lng) - Number(a.lng)) * t,
+    Number(a.lat) + (Number(b.lat) - Number(a.lat)) * t
+  );
 }
 
 function togglePlayback() {
@@ -497,16 +518,37 @@ function togglePlayback() {
     return;
   }
   playbackPlaying.value = true;
-  playbackTimer = setInterval(() => {
-    const len = orderedPoints.value.length;
-    if (len < 2) {
-      stopPlayback();
-      return;
+  playbackLastTime = performance.now();
+  (function animate(now) {
+    if (!playbackPlaying.value || !mapInst || !TMapCtor) return;
+    const dt = now - playbackLastTime;
+    playbackLastTime = now;
+    const path = orderedPoints.value;
+    const len = path.length;
+    if (len < 2) { stopPlayback(); return; }
+    playbackFraction += dt / PLAYBACK_SEGMENT_MS;
+    while (playbackFraction >= 1.0 && playbackIndex.value < len - 1) {
+      playbackFraction -= 1.0;
+      playbackIndex.value += 1;
     }
-    let next = playbackIndex.value + 1;
-    if (next >= len) next = 0;
-    playbackIndex.value = next;
-  }, PLAYBACK_STEP_MS);
+    if (playbackIndex.value >= len - 1) {
+      playbackIndex.value = 0;
+      playbackFraction = 0;
+    }
+    const idx = playbackIndex.value;
+    const ptPath = path.map((p) => toTLngLat(p));
+    let pos;
+    if (idx + 1 < ptPath.length && playbackFraction > 0) {
+      pos = lerpLngLat(ptPath[idx], ptPath[idx + 1], Math.min(1, playbackFraction));
+    } else {
+      pos = ptPath[idx];
+    }
+    if (playbackMarker) {
+      try { playbackMarker.setPosition(pos); } catch {}
+    }
+    try { mapInst.panTo(pos); } catch {}
+    playbackRafId = requestAnimationFrame(animate);
+  })(playbackLastTime);
 }
 
 async function loadPointsAndEvents(taskId) {
@@ -987,7 +1029,6 @@ onUnmounted(() => {
           <van-button class="recenter-btn" size="small" round type="primary" @click="centerMapToCurrentPosition">定位到我</van-button>
         </div>
         <div class="map-tool-row">
-          <van-button size="small" plain type="primary" @click="fitMapToTrack">显示轨迹</van-button>
           <van-button size="small" plain type="primary" :disabled="orderedPoints.length < 2" @click="togglePlayback">
             {{ playbackPlaying ? "暂停回放" : "播放回放" }}
           </van-button>
@@ -999,20 +1040,8 @@ onUnmounted(() => {
           :max="Math.max(0, orderedPoints.length - 1)"
           :disabled="orderedPoints.length < 1"
           bar-height="4px"
-          active-color="#07c160"
+          active-color="#1989fa"
         />
-        <div class="map-legend map-legend-lines">
-          <span class="legend-title">图层</span>
-          <span class="legend-item"><span class="legend-line" /></span>
-          <span class="legend-item"><span class="legend-dot" style="background:#07c160;width:8px;height:8px" />轨迹采样点</span>
-        </div>
-        <div class="map-legend">
-          <span class="legend-title">事件</span>
-          <span v-for="t in EVENT_TYPES" :key="'legend_'+t.value" class="legend-item">
-            <span class="legend-dot legend-dot-lg" :style="{ backgroundColor: t.color }" />
-            {{ t.label }}
-          </span>
-        </div>
       </div>
 
       <div class="actions compact-actions">
@@ -1238,52 +1267,6 @@ onUnmounted(() => {
   display: flex;
   gap: 10px;
   margin: 0 0 8px;
-}
-
-.map-legend {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 10px;
-  margin: 0 0 10px;
-}
-
-.legend-title {
-  font-size: 12px;
-  color: #969799;
-}
-
-.legend-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  color: #646566;
-}
-
-.legend-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-}
-
-.legend-dot-lg {
-  width: 12px;
-  height: 12px;
-}
-
-.map-legend-lines {
-  margin-bottom: 6px;
-}
-
-.legend-line {
-  display: inline-block;
-  width: 22px;
-  height: 0;
-  border-top: 2px solid #07c160;
-  border-radius: 1px;
-  vertical-align: middle;
-  margin-right: 2px;
 }
 
 .patrol-popup-inner {
