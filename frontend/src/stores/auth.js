@@ -27,10 +27,5 @@ export const useAuthStore = defineStore("auth", {
       this.setAuth(data.access_token, data.user);
       return data;
     },
-    async register(payload) {
-      const { data } = await apiClient.post("/auth/register", payload);
-      this.setAuth(data.access_token, data.user);
-      return data;
-    },
   },
 });

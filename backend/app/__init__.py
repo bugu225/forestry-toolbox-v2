@@ -3,7 +3,7 @@ from sqlalchemy import inspect, text
 
 from .config import Config
 from .extensions import cors, db, jwt
-from .models import KnowledgeDoc, PatrolSyncRecord, PlantIdentification, QAMessage, QASession, User
+from .models import KnowledgeDoc, User
 from .routes.auth import INTERNAL_USERS, auth_bp
 from .routes.health import health_bp
 from .routes.identify import identify_bp
@@ -96,37 +96,18 @@ def _seed_knowledge_docs() -> None:
     db.session.commit()
 
 
-def _purge_user_related_data() -> None:
-    """删除依赖 users 的业务数据（顺序满足外键）。"""
-    QAMessage.query.delete()
-    QASession.query.delete()
-    PlantIdentification.query.delete()
-    PatrolSyncRecord.query.delete()
-    User.query.delete()
-    db.session.commit()
-
-
 def _ensure_internal_users() -> None:
-    """仅保留 INTERNAL_USERS 中的内部账号；其余用户及关联数据一并清除。"""
-    expected_names = set(INTERNAL_USERS.keys())
-    users = User.query.all()
-    by_name = {u.username: u for u in users}
-
-    def _state_ok() -> bool:
-        if set(by_name) != expected_names or len(users) != len(expected_names):
-            return False
-        for name, pwd in INTERNAL_USERS.items():
-            u = by_name.get(name)
-            if not u or not u.check_password(pwd):
-                return False
-        return True
-
-    if _state_ok():
-        return
-
-    _purge_user_related_data()
+    """确保 INTERNAL_USERS 中的账号存在且密码正确；绝不触碰业务数据。"""
+    changed = False
     for uname, pwd in INTERNAL_USERS.items():
-        user = User(username=uname, role="admin")
-        user.set_password(pwd)
-        db.session.add(user)
-    db.session.commit()
+        user = User.query.filter_by(username=uname).first()
+        if not user:
+            user = User(username=uname, role="admin")
+            user.set_password(pwd)
+            db.session.add(user)
+            changed = True
+        elif not user.check_password(pwd):
+            user.set_password(pwd)
+            changed = True
+    if changed:
+        db.session.commit()

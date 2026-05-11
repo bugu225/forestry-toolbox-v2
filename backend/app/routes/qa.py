@@ -81,38 +81,6 @@ RULE_CITATION_LIBRARY = [
     },
 ]
 
-POLICY_ITEMS = [
-    {
-        "id": "fire_emergency",
-        "title": "火情应急速查（示例）",
-        "keywords": ["火情", "火灾", "应急", "烟点", "撤离"],
-        "summary": "优先保障人员安全，快速记录位置与风险信息，完成分级上报。",
-    },
-    {
-        "id": "first_aid",
-        "title": "野外急救速查（示例）",
-        "keywords": ["急救", "受伤", "中暑", "蛇咬", "失温"],
-        "summary": "先做生命体征评估，再止血固定与保温，并尽快联系救援。",
-    },
-    {
-        "id": "tea_management",
-        "title": "油茶管护速查（示例）",
-        "keywords": ["油茶", "施肥", "修剪", "病虫害", "管护"],
-        "summary": "按季节开展修剪与施肥，结合病虫害巡查形成闭环管理。",
-    },
-    {
-        "id": "pine_wilt",
-        "title": "松材线虫病速查（示例）",
-        "keywords": ["松材线虫", "线虫", "疫木", "松材"],
-        "summary": "关注枯死松树与媒介昆虫迹象，按规定报告并配合检疫除治。",
-    },
-    {
-        "id": "fire_season",
-        "title": "森林防火期速查（示例）",
-        "keywords": ["防火期", "森林防火期", "禁火期", "野外用火"],
-        "summary": "防火期时段因地区而异，以政府公告为准；严控火源并及时上报。",
-    },
-]
 
 
 def _serialize_doc(doc: KnowledgeDoc):
