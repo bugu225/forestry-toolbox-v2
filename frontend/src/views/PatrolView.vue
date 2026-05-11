@@ -48,9 +48,9 @@ function eventTypeColor(value) {
 }
 
 function locationSourceLabel(source) {
-  if (source === "track_point") return "轨迹点回填";
-  if (source === "gps_sample") return "定时采样";
-  return "未知来源";
+  if (source === "track_point") return "吸附最近轨迹点";
+  if (source === "gps_sample") return "GPS采样";
+  return "";
 }
 
 function classifyAccuracyLevel(acc) {
@@ -136,6 +136,7 @@ const mapError = ref("");
 let TMapCtor = null;
 let mapInst = null;
 let polylineInst = null;
+const trackDotMarkers = [];
 const eventMarkers = [];
 let playbackMarker = null;
 let playbackTimer = null;
@@ -145,7 +146,6 @@ let mapAutoViewportDone = false;
 const playbackIndex = ref(0);
 const playbackPlaying = ref(false);
 
-const quickEventSheetVisible = ref(false);
 const showEventList = ref(true);
 const showTrackList = ref(true);
 const sampleBusy = ref(false);
@@ -192,10 +192,11 @@ function clearMapOverlays() {
     mapInst.removeOverLay(polylineInst);
     polylineInst = null;
   }
+  for (const m of trackDotMarkers.splice(0)) {
+    try { mapInst.removeOverLay(m); } catch {}
+  }
   for (const m of eventMarkers.splice(0)) {
-    try {
-      mapInst.removeOverLay(m);
-    } catch {}
+    try { mapInst.removeOverLay(m); } catch {}
   }
   if (playbackMarker) {
     mapInst.removeOverLay(playbackMarker);
@@ -219,33 +220,54 @@ function toTLngLat(row) {
   return new TMapCtor.LngLat(Number(row.lng), Number(row.lat));
 }
 
-function dotIconDataUrl(hex) {
-  const safe = String(hex || "#1989fa").replace(/"/g, "'");
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28"><circle cx="14" cy="14" r="9" fill="${safe}" stroke="#ffffff" stroke-width="2"/></svg>`;
+function dotIconDataUrl(hex, r, strokeW) {
+  const safe = String(hex || "#646566").replace(/"/g, "'");
+  const cr = Number(r) || 9;
+  const sw = Number(strokeW) || 2;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${(cr + sw) * 2}" height="${(cr + sw) * 2}"><circle cx="${cr + sw}" cy="${cr + sw}" r="${cr}" fill="${safe}" stroke="#ffffff" stroke-width="${sw}"/></svg>`;
   return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+}
+
+function makeTrackDotMarker(lnglat) {
+  let mk = null;
+  try { mk = new TMapCtor.Marker(lnglat); } catch {
+    try { mk = new TMapCtor.Marker({ lnglat }); } catch { return null; }
+  }
+  try {
+    if (TMapCtor.Icon && TMapCtor.Point && typeof mk.setIcon === "function") {
+      const icon = new TMapCtor.Icon({
+        iconUrl: dotIconDataUrl("#07c160", 5, 1),
+        iconSize: new TMapCtor.Point(12, 12),
+        iconAnchor: new TMapCtor.Point(6, 6),
+      });
+      mk.setIcon(icon);
+    }
+  } catch {}
+  return mk;
 }
 
 function makeEventMarker(ev) {
   const lnglat = toTLngLat(ev);
   let mk = null;
-  try {
-    mk = new TMapCtor.Marker(lnglat);
-  } catch {
-    try {
-      mk = new TMapCtor.Marker({ lnglat });
-    } catch {
-      return null;
-    }
+  try { mk = new TMapCtor.Marker(lnglat); } catch {
+    try { mk = new TMapCtor.Marker({ lnglat }); } catch { return null; }
   }
   try {
     if (TMapCtor.Icon && TMapCtor.Point && typeof mk.setIcon === "function") {
       const icon = new TMapCtor.Icon({
-        iconUrl: dotIconDataUrl(eventTypeColor(ev.type)),
-        iconSize: new TMapCtor.Point(26, 26),
-        iconAnchor: new TMapCtor.Point(13, 13),
+        iconUrl: dotIconDataUrl(eventTypeColor(ev.type), 11, 3),
+        iconSize: new TMapCtor.Point(28, 28),
+        iconAnchor: new TMapCtor.Point(14, 14),
       });
       mk.setIcon(icon);
     }
+  } catch {}
+  mk.setTitle((eventTypeLabel(ev.type) + " " + (ev.note || "")).trim());
+  mk._patrolEventData = ev;
+  try {
+    mk.addEventListener("click", () => {
+      focusEventOnMap(ev);
+    });
   } catch {}
   return mk;
 }
@@ -256,11 +278,18 @@ function redrawMapLayers() {
   const pathArr = orderedPoints.value;
   const path = pathArr.map((p) => toTLngLat(p));
 
+  for (let i = 0; i < path.length; i += 1) {
+    const mk = makeTrackDotMarker(path[i]);
+    if (mk) {
+      try { mapInst.addOverLay(mk); trackDotMarkers.push(mk); } catch {}
+    }
+  }
+
   if (path.length >= 2) {
     polylineInst = new TMapCtor.Polyline(path, {
       color: "#07c160",
-      weight: 7,
-      opacity: 0.95,
+      weight: 2,
+      opacity: 0.85,
       lineStyle: "solid",
     });
     mapInst.addOverLay(polylineInst);
@@ -277,7 +306,6 @@ function redrawMapLayers() {
     const mk = makeEventMarker(ev);
     if (!mk) continue;
     try {
-      mk.setTitle(`${eventTypeLabel(ev.type)} ${ev.note || ""}`.trim());
       mapInst.addOverLay(mk);
       eventMarkers.push(mk);
     } catch {}
@@ -286,12 +314,21 @@ function redrawMapLayers() {
   const idx = playbackIndex.value;
   if (path.length && idx >= 0 && idx < path.length) {
     const pos = path[idx];
-    playbackMarker = new TMapCtor.Marker(pos);
-    playbackMarker.setTitle("轨迹回放当前位置");
-    mapInst.addOverLay(playbackMarker);
+    try {
+      playbackMarker = new TMapCtor.Marker(pos);
+      playbackMarker.setTitle("轨迹回放当前位置");
+      if (TMapCtor.Icon && TMapCtor.Point && typeof playbackMarker.setIcon === "function") {
+        const icon = new TMapCtor.Icon({
+          iconUrl: dotIconDataUrl("#1989fa", 8, 3),
+          iconSize: new TMapCtor.Point(22, 22),
+          iconAnchor: new TMapCtor.Point(11, 11),
+        });
+        playbackMarker.setIcon(icon);
+      }
+      mapInst.addOverLay(playbackMarker);
+    } catch {}
     if (playbackPlaying.value) mapInst.panTo(pos);
   }
-
 }
 
 async function initAmapIfNeeded() {
@@ -688,6 +725,7 @@ async function restoreActivePatrol() {
 }
 
 function coordinatesFromLastPointOrNull(maxAgeMs = 25 * 60 * 1000) {
+  if (!points.value.length) return null;
   const sorted = [...points.value].sort((a, b) => (b.recorded_at || 0) - (a.recorded_at || 0));
   const last = sorted[0];
   if (!last) return null;
@@ -702,12 +740,15 @@ function coordinatesFromLastPointOrNull(maxAgeMs = 25 * 60 * 1000) {
     lng,
     accuracy: Number(last.accuracy || 0),
     source: "track_point",
+    snappedPointTs: recAt,
   };
 }
 
 async function resolveCoordsForEvent() {
-  const fromTrack = coordinatesFromLastPointOrNull(366 * 24 * 60 * 60 * 1000);
+  const fromTrack = coordinatesFromLastPointOrNull(60 * 1000);
   if (fromTrack) return fromTrack;
+  const fallback = coordinatesFromLastPointOrNull(366 * 24 * 60 * 60 * 1000);
+  if (fallback) return fallback;
   throw new Error("bad_coord");
 }
 
@@ -731,41 +772,6 @@ async function persistPatrolEvent({ lat, lng, type, note, photo, accuracy, sourc
   await nextTick();
   if (mapInst && TMapCtor) redrawMapLayers();
   return rec;
-}
-
-async function quickRecordAnomaly() {
-  if (!activeTask.value) {
-    showFailToast("请先开始巡护");
-    return;
-  }
-  quickEventSheetVisible.value = true;
-}
-
-async function onQuickEventSelect(action) {
-  const type = action?.value || EVENT_TYPES.find((t) => t.label === action?.name)?.value;
-  if (!type) return;
-
-  eventSaveBusy.value = true;
-  try {
-    const { lat, lng, accuracy, source } = await resolveCoordsForEvent();
-    const rec = await persistPatrolEvent({
-      lat,
-      lng,
-      type,
-      note: "一键记录异常",
-      photo: null,
-      accuracy,
-      source,
-    });
-    if (mapInst && TMapCtor && rec) {
-      mapInst.panTo(toTLngLat(rec));
-    }
-    showSuccessToast("已保存事件");
-  } catch {
-    showFailToast("未取得坐标：请稍等定位或走几步再试，也可用「记录事件」");
-  } finally {
-    eventSaveBusy.value = false;
-  }
 }
 
 function openEventSheet() {
@@ -797,7 +803,11 @@ async function saveEvent() {
       mapInst.panTo(toTLngLat(rec));
     }
     showEventSheet.value = false;
-    showSuccessToast("事件已保存");
+    showEventList.value = true;
+    await nextTick();
+    const el = document.getElementById("patrol-event-list");
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    showSuccessToast("事件已保存至列表");
   } catch {
     showFailToast("无法获取有效位置，事件未保存（可稍等定位或走几步再试）");
   } finally {
@@ -966,7 +976,7 @@ onUnmounted(() => {
 
       <div class="map-wrap">
         <p class="hint tight">
-          事件随时写入本机；轨迹在「结束巡护」时整条写入任务记录。巡护进行中轨迹仅存本页内存，刷新会丢失。网络短暂波动不会立刻切离线地图；定位按每10秒采样一次持续记录。
+          事件坐标自动吸附至最近一次轨迹采样点；轨迹点每10秒记录一次。巡护中轨迹仅存内存，结束巡护后整体写入。
         </p>
         <div class="stats-chip">{{ patrolStatsText }}</div>
         <div v-if="mapError" class="map-fallback">
@@ -1005,12 +1015,13 @@ onUnmounted(() => {
         />
         <div class="map-legend map-legend-lines">
           <span class="legend-title">图层</span>
-          <span class="legend-item"><span class="legend-line solid" />已记录轨迹</span>
+          <span class="legend-item"><span class="legend-line" /></span>
+          <span class="legend-item"><span class="legend-dot" style="background:#07c160;width:8px;height:8px" />轨迹采样点</span>
         </div>
         <div class="map-legend">
           <span class="legend-title">事件</span>
-          <span v-for="t in EVENT_TYPES" :key="`legend_${t.value}`" class="legend-item">
-            <span class="legend-dot" :style="{ backgroundColor: t.color }" />
+          <span v-for="t in EVENT_TYPES" :key="'legend_'+t.value" class="legend-item">
+            <span class="legend-dot legend-dot-lg" :style="{ backgroundColor: t.color }" />
             {{ t.label }}
           </span>
         </div>
@@ -1033,7 +1044,6 @@ onUnmounted(() => {
         <template v-if="activeTask">
           <van-button type="danger" block plain @click="stopPatrol">结束巡护</van-button>
           <van-button type="warning" block plain @click="openEventSheet">标记事件</van-button>
-          <van-button type="primary" block plain :loading="eventSaveBusy" @click="quickRecordAnomaly">一键异常</van-button>
         </template>
       </div>
 
@@ -1042,16 +1052,18 @@ onUnmounted(() => {
         <van-button size="small" :type="showTrackList ? 'primary' : 'default'" plain @click="showTrackList = !showTrackList">轨迹</van-button>
       </div>
 
-      <PatrolEventList
-        :show="showEventList"
-        :events="events"
-        :event-type-label="eventTypeLabel"
-        :format-time="formatTime"
-        :format-coord="formatCoord"
-        :location-source-label="locationSourceLabel"
-        @focus="focusEventOnMap"
-        @delete="deleteEvent"
-      />
+      <div id="patrol-event-list">
+        <PatrolEventList
+          :show="showEventList"
+          :events="events"
+          :event-type-label="eventTypeLabel"
+          :format-time="formatTime"
+          :format-coord="formatCoord"
+          :location-source-label="locationSourceLabel"
+          @focus="focusEventOnMap"
+          @delete="deleteEvent"
+        />
+      </div>
 
       <PatrolTrackList
         :show="showTrackList"
@@ -1061,18 +1073,6 @@ onUnmounted(() => {
       />
     </div>
   </div>
-  <van-action-sheet
-    v-model:show="quickEventSheetVisible"
-    teleport="body"
-    title="一键记录异常"
-    description="使用最近一次10秒采样轨迹点作为事件坐标。"
-    :actions="EVENT_TYPES.map((t) => ({ name: t.label, value: t.value, color: t.color }))"
-    close-on-click-action
-    cancel-text="取消"
-    class="patrol-action-sheet"
-    @select="onQuickEventSelect"
-  />
-
   <PatrolEventSheet
     v-model:show="showEventSheet"
     v-model:event-type="eventType"
@@ -1279,6 +1279,11 @@ onUnmounted(() => {
   border-radius: 999px;
 }
 
+.legend-dot-lg {
+  width: 12px;
+  height: 12px;
+}
+
 .map-legend-lines {
   margin-bottom: 6px;
 }
@@ -1287,13 +1292,10 @@ onUnmounted(() => {
   display: inline-block;
   width: 22px;
   height: 0;
-  border-top: 3px solid #07c160;
+  border-top: 2px solid #07c160;
+  border-radius: 1px;
   vertical-align: middle;
   margin-right: 2px;
-}
-
-.legend-line.solid {
-  border-top-style: solid;
 }
 
 .patrol-popup-inner {

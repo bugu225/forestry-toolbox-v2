@@ -3,6 +3,8 @@
     <router-view />
     <footer class="site-footer">
       <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">豫ICP备2026018815号-1</a>
+      <span class="footer-divider">|</span>
+      <span>公安联网备案: af6c7ecd3acff61ff3fc44ca3009060f</span>
     </footer>
   </div>
 </template>
