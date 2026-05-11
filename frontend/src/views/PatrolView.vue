@@ -724,32 +724,20 @@ async function restoreActivePatrol() {
   }
 }
 
-function coordinatesFromLastPointOrNull(maxAgeMs = 25 * 60 * 1000) {
-  if (!points.value.length) return null;
+async function resolveCoordsForEvent() {
+  if (!points.value.length) throw new Error("bad_coord");
   const sorted = [...points.value].sort((a, b) => (b.recorded_at || 0) - (a.recorded_at || 0));
   const last = sorted[0];
-  if (!last) return null;
-  const recAt = Number(last.recorded_at || 0);
-  const age = recAt > 0 ? Date.now() - recAt : Number.POSITIVE_INFINITY;
-  if (age > maxAgeMs) return null;
-  const lat = Number(last.lat);
-  const lng = Number(last.lng);
-  if (!isValidLngLat({ lat, lng })) return null;
+  const lat = Number(last?.lat);
+  const lng = Number(last?.lng);
+  if (!isValidLngLat({ lat, lng })) throw new Error("bad_coord");
   return {
     lat,
     lng,
     accuracy: Number(last.accuracy || 0),
     source: "track_point",
-    snappedPointTs: recAt,
+    snappedPointTs: Number(last.recorded_at || 0),
   };
-}
-
-async function resolveCoordsForEvent() {
-  const fromTrack = coordinatesFromLastPointOrNull(60 * 1000);
-  if (fromTrack) return fromTrack;
-  const fallback = coordinatesFromLastPointOrNull(366 * 24 * 60 * 60 * 1000);
-  if (fallback) return fallback;
-  throw new Error("bad_coord");
 }
 
 async function persistPatrolEvent({ lat, lng, type, note, photo, accuracy, source }) {
