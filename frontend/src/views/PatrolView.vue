@@ -5,7 +5,6 @@ import { storeToRefs } from "pinia";
 import { useNetworkStore } from "../stores/network";
 import PatrolEventSheet from "../components/PatrolEventSheet.vue";
 import PatrolEventList from "../components/PatrolEventList.vue";
-import PatrolTrackList from "../components/PatrolTrackList.vue";
 import { loadTianditu } from "../services/tiandituLoader";
 import { exportPatrolPdfReport } from "../services/patrolPdfExport";
 import { deletePatrolPointsForTask, deleteRecord, getAllRecords, putRecord, stores } from "../services/offlineDb";
@@ -150,7 +149,10 @@ let playbackRafId = null;
 let playbackLastTime = 0;
 
 const showEventList = ref(true);
-const showTrackList = ref(true);
+const showTrackList = ref(false);
+const patrolHistory = ref([]);
+const patrolHistoryDrawerOpen = ref(false);
+const selectedHistoryTask = ref(null);
 const sampleBusy = ref(false);
 const lastSampleAt = ref(0);
 let lastSamplingWarnAt = 0;
@@ -575,6 +577,67 @@ async function loadPointsAndEvents(taskId) {
   points.value = sortPts(pts);
 }
 
+async function loadPatrolHistory() {
+  const tasks = await getAllRecords(stores.patrolTasks);
+  patrolHistory.value = tasks
+    .filter((t) => t.status === "ended")
+    .sort((a, b) => (b.ended_at || 0) - (a.ended_at || 0));
+}
+
+function openHistoryDetail(task) {
+  selectedHistoryTask.value = task;
+  patrolHistoryDrawerOpen.value = true;
+}
+
+async function deleteHistoryTask(task) {
+  try {
+    await showConfirmDialog({ title: "删除巡护记录", message: "确定删除该条巡护记录？删除后不可恢复。" });
+  } catch {
+    return;
+  }
+  await deleteRecord(stores.patrolTasks, task.local_id);
+  const allE = await getAllRecords(stores.patrolEvents);
+  for (const ev of allE.filter((e) => e.task_local_id === task.local_id)) {
+    await deleteRecord(stores.patrolEvents, ev.local_id);
+  }
+  await loadPatrolHistory();
+  if (selectedHistoryTask.value?.local_id === task.local_id) {
+    selectedHistoryTask.value = null;
+    patrolHistoryDrawerOpen.value = false;
+  }
+  showSuccessToast("已删除");
+}
+
+function viewHistoryOnMap(task) {
+  const pts = Array.isArray(task.track_points) ? task.track_points : [];
+  if (!pts.length) {
+    showToast("该巡护无轨迹数据");
+    return;
+  }
+  endedTaskView.value = task;
+  points.value = [...pts].sort((a, b) => (a.recorded_at || 0) - (b.recorded_at || 0));
+  patrolHistoryDrawerOpen.value = false;
+  mapAutoViewportDone = false;
+  void nextTick(() => {
+    if (mapInst && TMapCtor) {
+      redrawMapLayers();
+    }
+  });
+}
+
+function formatDuration(ms) {
+  if (!ms || ms <= 0) return "—";
+  const h = Math.floor(ms / 3600000);
+  const m = Math.floor((ms % 3600000) / 60000);
+  if (h > 0) return `${h}小时${m}分钟`;
+  return `${m}分钟`;
+}
+
+function formatDistance(meters) {
+  if (!meters || meters <= 0) return "—";
+  return meters >= 1000 ? `${(meters / 1000).toFixed(2)} km` : `${Math.round(meters)} m`;
+}
+
 function clearSamplingTimer() {
   if (samplingTimer.value) {
     clearTimeout(samplingTimer.value);
@@ -737,17 +800,26 @@ async function stopPatrol() {
   clearSamplingTimer();
   const taskId = activeTask.value.local_id;
   const trackSnapshot = [...orderedPoints.value];
+  if (mapInst && TMapCtor && trackSnapshot.length >= 2) {
+    try { mapInst.setViewport(trackSnapshot.map((p) => toTLngLat(p))); } catch {}
+  }
+  await nextTick();
+  const mapSnapshot = await captureMapSnapshotOrNull();
   const ended = {
     ...activeTask.value,
     ended_at: Date.now(),
     status: "ended",
     track_points: trackSnapshot,
+    map_snapshot_dataurl: mapSnapshot || null,
+    distance_meters: patrolStats.value.distanceMeters,
+    duration_ms: patrolStats.value.durationMs,
   };
   await putRecord(stores.patrolTasks, ended);
   await deletePatrolPointsForTask(taskId);
   endedTaskView.value = ended;
   activeTask.value = null;
-  showSuccessToast("巡护已结束，整条轨迹与事件已保存在本机");
+  await loadPatrolHistory();
+  showSuccessToast("巡护已结束，轨迹与地图已保存");
 }
 
 async function restoreActivePatrol() {
@@ -839,6 +911,8 @@ async function saveEvent() {
     if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
     showSuccessToast("事件已保存至列表");
   } catch {
+    showEventSheet.value = false;
+    await nextTick();
     showFailToast("无法获取有效位置，事件未保存（可稍等定位或走几步再试）");
   } finally {
     eventSaveBusy.value = false;
@@ -977,6 +1051,7 @@ onMounted(async () => {
   } catch {
     showFailToast("本地数据库打开失败，请刷新页面或检查浏览器是否禁用存储");
   }
+  await loadPatrolHistory();
   await nextTick();
   void initAmapIfNeeded();
 });
@@ -1082,12 +1157,49 @@ onUnmounted(() => {
         />
       </div>
 
-      <PatrolTrackList
-        :show="showTrackList"
-        :points="points"
-        :format-time="formatTime"
-        :format-coord="formatCoord"
-      />
+      <div v-if="showTrackList" class="track-list-block">
+        <van-cell-group inset title="轨迹点（本次巡护）" class="block">
+          <van-empty
+            v-if="!orderedPoints.length"
+            image="search"
+            description="尚无轨迹点"
+          />
+          <van-cell
+            v-for="p in orderedPoints.slice(-6).reverse()"
+            :key="p.local_id"
+            :title="`${formatCoord(p.lat)}, ${formatCoord(p.lng)}`"
+            :label="`时间 ${formatTime(p.recorded_at)} · 精度约 ${Number.isFinite(Number(p.accuracy)) ? Math.round(Number(p.accuracy)) : '—'} m`"
+          />
+        </van-cell-group>
+      </div>
+
+      <div class="history-section">
+        <div class="history-header">
+          <span class="history-title">历史巡护记录</span>
+          <van-tag v-if="patrolHistory.length" plain type="primary">{{ patrolHistory.length }} 条</van-tag>
+        </div>
+        <van-empty v-if="!patrolHistory.length" image="search" description="暂无历史巡护记录" />
+        <div v-for="task in patrolHistory" :key="task.local_id" class="history-card">
+          <div class="history-card-info" @click="openHistoryDetail(task)">
+            <div class="history-card-title">{{ task.title || '巡护记录' }}</div>
+            <div class="history-card-meta">
+              <span>{{ formatTime(task.started_at) }} ~ {{ formatTime(task.ended_at) }}</span>
+            </div>
+            <div class="history-card-stats">
+              <span>里程 {{ formatDistance(task.distance_meters) }}</span>
+              <span class="stats-sep">·</span>
+              <span>时长 {{ formatDuration(task.duration_ms) }}</span>
+              <span class="stats-sep">·</span>
+              <span>{{ Array.isArray(task.track_points) ? task.track_points.length : 0 }} 个轨迹点</span>
+            </div>
+            <img v-if="task.map_snapshot_dataurl" :src="task.map_snapshot_dataurl" alt="巡护地图" class="history-card-thumb" />
+          </div>
+          <div class="history-card-actions">
+            <van-button size="small" type="primary" plain @click="viewHistoryOnMap(task)">地图查看</van-button>
+            <van-button size="small" type="danger" plain @click="deleteHistoryTask(task)">删除</van-button>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
   <PatrolEventSheet
@@ -1442,6 +1554,85 @@ onUnmounted(() => {
 .pdf-key-item {
   display: block;
   margin-bottom: 8px;
+}
+
+.track-list-block .block {
+  margin-top: 12px;
+}
+
+.history-section {
+  margin-top: 16px;
+}
+
+.history-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 0 4px;
+}
+
+.history-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #323233;
+}
+
+.history-card {
+  background: #fff;
+  border-radius: 10px;
+  border: 1px solid #ebedf0;
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+
+.history-card-info {
+  padding: 12px;
+  cursor: pointer;
+}
+
+.history-card-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #323233;
+  margin-bottom: 4px;
+}
+
+.history-card-meta {
+  font-size: 12px;
+  color: #969799;
+  margin-bottom: 4px;
+}
+
+.history-card-stats {
+  font-size: 12px;
+  color: #646566;
+  margin-bottom: 8px;
+}
+
+.stats-sep {
+  margin: 0 4px;
+  color: #c8c9cc;
+}
+
+.history-card-thumb {
+  display: block;
+  width: 100%;
+  max-height: 180px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid #ebedf0;
+}
+
+.history-card-actions {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px 12px;
+  border-top: 1px solid #f5f5f5;
+}
+
+.history-card-actions .van-button {
+  flex: 1;
 }
 
 </style>
