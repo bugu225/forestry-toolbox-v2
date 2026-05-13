@@ -278,12 +278,24 @@ function doRedrawMapLayers() {
 
   const evMap = new Map();
   for (const ev of events.value) {
-    if (ev.point_local_id) evMap.set(ev.point_local_id, ev);
+    if (ev.point_local_id) {
+      evMap.set(ev.point_local_id, ev);
+    }
   }
 
   for (let i = 0; i < pathArr.length; i += 1) {
     const pt = pathArr[i];
-    const ev = evMap.get(pt.local_id);
+    let ev = evMap.get(pt.local_id);
+    if (!ev) {
+      let best = null;
+      let bestDist = 51;
+      for (const e of events.value) {
+        if (!isValidLngLat(e)) continue;
+        const d = haversineMeters(pt, e);
+        if (d < bestDist) { bestDist = d; best = e; }
+      }
+      ev = best;
+    }
     const mk = makeTrackDotMarker(path[i], ev ? eventTypeColor(ev.type) : null);
     if (mk) {
       if (ev) {
@@ -835,15 +847,7 @@ async function stopPatrol() {
     clearSamplingTimer();
     const taskId = activeTask.value.local_id;
     const trackSnapshot = [...orderedPoints.value];
-    if (mapInst && TMapCtor && trackSnapshot.length >= 2) {
-      try { mapInst.setViewport(trackSnapshot.map((p) => toTLngLat(p))); } catch {}
-    }
-    await nextTick();
-    let mapSnapshot = null;
-    try {
-      mapSnapshot = await captureMapSnapshotOrNull();
-    } catch {}
-    if (mapSnapshot && typeof mapSnapshot !== "string") mapSnapshot = null;
+
     const allE = await getAllRecords(stores.patrolEvents);
     const taskEvents = allE.filter((e) => e.task_local_id === taskId);
     const ended = {
@@ -852,11 +856,19 @@ async function stopPatrol() {
       status: "ended",
       track_points: trackSnapshot,
       events: taskEvents,
-      map_snapshot_dataurl: mapSnapshot || null,
+      map_snapshot_dataurl: null,
       distance_meters: patrolStats.value.distanceMeters,
       duration_ms: patrolStats.value.durationMs,
     };
     await putRecord(stores.patrolTasks, ended);
+
+    captureMapSnapshotOrNull().then((url) => {
+      if (url && typeof url === "string") {
+        ended.map_snapshot_dataurl = url;
+        putRecord(stores.patrolTasks, ended).catch(() => {});
+      }
+    }).catch(() => {});
+
     await deletePatrolPointsForTask(taskId);
     endedTaskView.value = ended;
     activeTask.value = null;
@@ -1000,14 +1012,20 @@ function tileYToLat(y, zoom) {
 }
 
 async function renderMapToCanvasDataUrl(points, events, width, height) {
-  const tk = resolveTiandituKey();
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext("2d");
   if (!ctx) return "";
+
   ctx.fillStyle = "#e8ecf1";
   ctx.fillRect(0, 0, width, height);
+
+  const gridColor = "#dde0e4";
+  ctx.strokeStyle = gridColor;
+  ctx.lineWidth = 1;
+  for (let i = 0; i < width; i += 60) { ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, height); ctx.stroke(); }
+  for (let j = 0; j < height; j += 60) { ctx.beginPath(); ctx.moveTo(0, j); ctx.lineTo(width, j); ctx.stroke(); }
 
   const pts = (points || []).filter(isValidLngLat);
   const evPts = (events || []).filter(isValidLngLat);
@@ -1022,7 +1040,7 @@ async function renderMapToCanvasDataUrl(points, events, width, height) {
   const maxLat = Math.max(...lats);
   const dx = Math.max(1e-9, maxLng - minLng);
   const dy = Math.max(1e-9, maxLat - minLat);
-  const pad = 24;
+  const pad = 40;
   const plotW = width - pad * 2;
   const plotH = height - pad * 2;
 
@@ -1032,24 +1050,23 @@ async function renderMapToCanvasDataUrl(points, events, width, height) {
     return [x, y];
   };
 
-  if (tk) {
+  const tk = resolveTiandituKey();
+  if (tk && dx < 0.5) {
     const range = Math.max(dx, dy);
     let zoom = 15;
     if (range < 0.002) zoom = 17;
     else if (range < 0.01) zoom = 16;
     else if (range < 0.05) zoom = 15;
     else if (range < 0.2) zoom = 14;
-    else if (range < 1) zoom = 13;
-    else zoom = 12;
+    else zoom = 13;
 
     const minTx = Math.floor(lngLatToTileX(minLng, zoom));
     const maxTx = Math.floor(lngLatToTileX(maxLng, zoom));
     const minTy = Math.floor(lngLatToTileY(maxLat, zoom));
     const maxTy = Math.floor(lngLatToTileY(minLat, zoom));
     const tileCount = (maxTx - minTx + 1) * (maxTy - minTy + 1);
-    const TILE_SIZE = 256;
 
-    if (tileCount <= 25) {
+    if (tileCount <= 9) {
       const tileLoads = [];
       for (let tx = minTx; tx <= maxTx; tx += 1) {
         for (let ty = minTy; ty <= maxTy; ty += 1) {
@@ -1059,55 +1076,49 @@ async function renderMapToCanvasDataUrl(points, events, width, height) {
         }
       }
 
-      const tileResults = await Promise.allSettled(
+      const tilePromise = Promise.allSettled(
         tileLoads.map((tile) =>
           new Promise((resolve, reject) => {
             const img = new Image();
-            img.crossOrigin = "anonymous";
-            img.onload = () => resolve({ img, tx: tile.tx, ty: tile.ty });
-            img.onerror = () => reject(new Error("tile_fail"));
-            const timer = setTimeout(() => reject(new Error("tile_timeout")), 6000);
-            img.onload = () => {
-              clearTimeout(timer);
-              resolve({ img, tx: tile.tx, ty: tile.ty });
-            };
-            img.onerror = () => {
-              clearTimeout(timer);
-              reject(new Error("tile_fail"));
-            };
+            const tid = setTimeout(() => reject(new Error("tile_timeout")), 2000);
+            img.onload = () => { clearTimeout(tid); resolve({ img, tx: tile.tx, ty: tile.ty }); };
+            img.onerror = () => { clearTimeout(tid); reject(new Error("tile_fail")); };
             img.src = tile.url;
           })
         )
       );
 
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(0, 0, width, height);
-      ctx.clip();
-
-      const tileScale = (canvas.width / plotW) * ((maxTx - minTx + 1) * TILE_SIZE / (width / 256));
-
-      for (const result of tileResults) {
-        if (result.status !== "fulfilled") continue;
-        const { img, tx, ty } = result.value;
-        const topLeftLng = tileXToLng(tx, zoom);
-        const topLeftLat = tileYToLat(ty, zoom);
-        const bottomRightLng = tileXToLng(tx + 1, zoom);
-        const bottomRightLat = tileYToLat(ty + 1, zoom);
-
-        const [sx, ey] = toPixelXY({ lng: topLeftLng, lat: topLeftLat });
-        const [ex, sy] = toPixelXY({ lng: bottomRightLng, lat: bottomRightLat });
-
-        if (isNaN(sx) || isNaN(sy) || isNaN(ex) || isNaN(ey)) continue;
-        try { ctx.drawImage(img, Math.min(sx, ex), Math.min(sy, ey), Math.abs(ex - sx), Math.abs(ey - sy)); } catch {}
-      }
-      ctx.restore();
+      try {
+        const tileResults = await Promise.race([
+          tilePromise,
+          new Promise((_, r) => setTimeout(() => r(new Error("tiles_timeout")), 3000)),
+        ]);
+        if (Array.isArray(tileResults)) {
+          ctx.save();
+          ctx.beginPath(); ctx.rect(0, 0, width, height); ctx.clip();
+          for (const result of tileResults) {
+            if (result.status !== "fulfilled") continue;
+            const { img, tx, ty } = result.value;
+            const topLeftLng = tileXToLng(tx, zoom);
+            const topLeftLat = tileYToLat(ty, zoom);
+            const bottomRightLng = tileXToLng(tx + 1, zoom);
+            const bottomRightLat = tileYToLat(ty + 1, zoom);
+            const [sx, ey] = toPixelXY({ lng: topLeftLng, lat: topLeftLat });
+            const [ex, sy] = toPixelXY({ lng: bottomRightLng, lat: bottomRightLat });
+            if (isNaN(sx) || isNaN(sy) || isNaN(ex) || isNaN(ey)) continue;
+            try { ctx.drawImage(img, Math.min(sx, ex), Math.min(sy, ey), Math.abs(ex - sx), Math.abs(ey - sy)); } catch {}
+          }
+          ctx.restore();
+        }
+      } catch {}
     }
   }
 
   if (pts.length >= 2) {
     ctx.strokeStyle = "#07c160";
     ctx.lineWidth = 3;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
     ctx.beginPath();
     pts.forEach((p, i) => {
       const [x, y] = toPixelXY(p);
@@ -1115,11 +1126,13 @@ async function renderMapToCanvasDataUrl(points, events, width, height) {
       else ctx.lineTo(x, y);
     });
     ctx.stroke();
-  } else if (pts.length === 1) {
-    const [x, y] = toPixelXY(pts[0]);
-    ctx.fillStyle = "#07c160";
+  }
+
+  ctx.fillStyle = "#07c160";
+  for (const p of pts) {
+    const [x, y] = toPixelXY(p);
     ctx.beginPath();
-    ctx.arc(x, y, 8, 0, Math.PI * 2);
+    ctx.arc(x, y, 3, 0, Math.PI * 2);
     ctx.fill();
   }
 
@@ -1134,6 +1147,11 @@ async function renderMapToCanvasDataUrl(points, events, width, height) {
     ctx.stroke();
   }
 
+  ctx.fillStyle = "#969799";
+  ctx.font = "10px sans-serif";
+  ctx.fillText(`${minLat.toFixed(4)},${minLng.toFixed(4)}`, 6, height - 6);
+  ctx.fillText(`${maxLat.toFixed(4)},${maxLng.toFixed(4)}`, width - 150, 14);
+
   return canvas.toDataURL("image/jpeg", 0.92);
 }
 
@@ -1141,7 +1159,7 @@ async function captureMapSnapshotOrNull() {
   try {
     return await Promise.race([
       renderMapToCanvasDataUrl(orderedPoints.value, events.value, 800, 480),
-      new Promise((_, r) => setTimeout(() => r(new Error("snap_timeout")), 5000)),
+      new Promise((_, r) => setTimeout(() => r(new Error("snap_timeout")), 2500)),
     ]);
   } catch {
     return null;
@@ -1192,7 +1210,7 @@ async function exportPatrolPdf() {
       try {
         mapSnapshot = await Promise.race([
           renderMapToCanvasDataUrl(orderedPoints.value, events.value, 1080, 460),
-          new Promise((_, r) => setTimeout(() => r(new Error("pdf_map_timeout")), 8000)),
+          new Promise((_, r) => setTimeout(() => r(new Error("pdf_map_timeout")), 4000)),
         ]);
       } catch {}
     }
