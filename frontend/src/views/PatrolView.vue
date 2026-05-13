@@ -267,26 +267,43 @@ function doRedrawMapLayers() {
   const pathArr = orderedPoints.value;
   const path = pathArr.map((p) => toTLngLat(p));
 
-  const evMap = new Map();
+  const evAssigned = new Map();
+  const ptClaimed = new Set();
+
   for (const ev of events.value) {
+    if (!isValidLngLat(ev)) continue;
     if (ev.point_local_id) {
-      evMap.set(ev.point_local_id, ev);
+      const directPt = pathArr.find((p) => p.local_id === ev.point_local_id);
+      if (directPt) {
+        evAssigned.set(ev.local_id, directPt);
+        ptClaimed.add(directPt.local_id);
+      }
     }
+  }
+
+  for (const ev of events.value) {
+    if (!isValidLngLat(ev) || evAssigned.has(ev.local_id)) continue;
+    let bestPt = null;
+    let bestDist = 51;
+    for (const pt of pathArr) {
+      if (ptClaimed.has(pt.local_id)) continue;
+      const d = haversineMeters(pt, ev);
+      if (d < bestDist) { bestDist = d; best = pt; }
+    }
+    if (bestPt) {
+      evAssigned.set(ev.local_id, bestPt);
+      ptClaimed.add(bestPt.local_id);
+    }
+  }
+
+  const ptToEv = new Map();
+  for (const [evId, pt] of evAssigned) {
+    ptToEv.set(pt.local_id, events.value.find((e) => e.local_id === evId));
   }
 
   for (let i = 0; i < pathArr.length; i += 1) {
     const pt = pathArr[i];
-    let ev = evMap.get(pt.local_id);
-    if (!ev) {
-      let best = null;
-      let bestDist = 51;
-      for (const e of events.value) {
-        if (!isValidLngLat(e)) continue;
-        const d = haversineMeters(pt, e);
-        if (d < bestDist) { bestDist = d; best = e; }
-      }
-      ev = best;
-    }
+    const ev = ptToEv.get(pt.local_id);
     const mk = makeTrackDotMarker(path[i], ev ? eventTypeColor(ev.type) : null);
     if (mk) {
       if (ev) {
@@ -835,29 +852,48 @@ async function stopPatrol() {
   }
   stopping.value = true;
   try {
-    clearSamplingTimer();
-    const taskId = activeTask.value.local_id;
+    const task = activeTask.value;
+    const taskId = task.local_id;
+    const title = task.title || "";
+    const offline = task.offline_mode === true;
     const trackSnapshot = [...orderedPoints.value];
     const taskEvents = [...events.value];
+    const snapshotStats = { ...patrolStats.value };
+
+    activeTask.value = null;
+    isOfflinePatrol.value = false;
+    clearSamplingTimer();
+
+    if (sampleBusy.value) {
+      await Promise.race([
+        new Promise((resolve) => {
+          const poll = setInterval(() => {
+            if (!sampleBusy.value) { clearInterval(poll); resolve(); }
+          }, 80);
+        }),
+        new Promise((resolve) => setTimeout(resolve, 2000)),
+      ]);
+    }
 
     const ended = {
-      ...activeTask.value,
+      local_id: taskId,
+      started_at: trackSnapshot.length ? trackSnapshot[0].recorded_at : task.started_at,
       ended_at: Date.now(),
       status: "ended",
+      title,
+      offline_mode: offline,
       track_points: trackSnapshot,
       events: taskEvents,
       map_snapshot_dataurl: null,
-      distance_meters: patrolStats.value.distanceMeters,
-      duration_ms: patrolStats.value.durationMs,
+      distance_meters: snapshotStats.distanceMeters,
+      duration_ms: snapshotStats.durationMs,
     };
     await putRecord(stores.patrolTasks, ended);
     await deletePatrolPointsForTask(taskId);
 
     endedTaskView.value = ended;
-    activeTask.value = null;
-    isOfflinePatrol.value = false;
-    await loadPatrolHistory();
-    showSuccessToast(`巡护已结束 · ${trackSnapshot.length}个轨迹点 · ${formatDistance(patrolStats.value.distanceMeters)}`);
+    void loadPatrolHistory();
+    showSuccessToast(`巡护已结束 · ${trackSnapshot.length}个轨迹点 · ${formatDistance(snapshotStats.distanceMeters)}`);
   } finally {
     stopping.value = false;
   }
