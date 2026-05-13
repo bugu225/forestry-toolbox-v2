@@ -7,7 +7,7 @@ import PatrolEventSheet from "../components/PatrolEventSheet.vue";
 import PatrolEventList from "../components/PatrolEventList.vue";
 import { loadTianditu } from "../services/tiandituLoader";
 import { exportPatrolPdfReport } from "../services/patrolPdfExport";
-import { deletePatrolPointsForTask, deleteRecord, getAllRecords, putRecord, stores } from "../services/offlineDb";
+import { deletePatrolPointsForTask, deleteRecord, getAllRecords, getRecord, putRecord, stores } from "../services/offlineDb";
 import { describeGeoError, getCurrentPositionCompat, getHighAccuracySnapshot } from "../utils/geolocation";
 import { uid } from "../utils/uid";
 
@@ -76,6 +76,7 @@ const gpsBusy = ref(false);
 const eventSaveBusy = ref(false);
 const stopping = ref(false);
 const isOfflinePatrol = ref(false);
+let checkpointCounter = 0;
 
 const showEventSheet = ref(false);
 const eventType = ref("pest");
@@ -136,6 +137,8 @@ const mapDivRef = ref(null);
 const mapError = ref("");
 let TMapCtor = null;
 let mapInst = null;
+let redrawPending = false;
+let redrawTimer = null;
 let polylineInst = null;
 const trackDotMarkers = [];
 const eventMarkers = [];
@@ -288,6 +291,17 @@ function makeEventMarker(ev) {
 }
 
 function redrawMapLayers() {
+  if (!mapInst || !TMapCtor) return;
+  if (redrawPending) return;
+  redrawPending = true;
+  if (redrawTimer) clearTimeout(redrawTimer);
+  redrawTimer = setTimeout(() => {
+    redrawPending = false;
+    void doRedrawMapLayers();
+  }, 80);
+}
+
+function doRedrawMapLayers() {
   if (!mapInst || !TMapCtor) return;
   clearMapOverlays();
   const pathArr = orderedPoints.value;
@@ -757,6 +771,14 @@ async function recordSamplePoint() {
     if (!activeTask.value || activeTask.value.local_id !== taskId) return false;
     points.value = [...points.value, rec].sort((a, b) => a.recorded_at - b.recorded_at);
     lastSampleAt.value = rec.recorded_at;
+    checkpointCounter += 1;
+    if (checkpointCounter % 3 === 0) {
+      const task = await getRecord(stores.patrolTasks, taskId);
+      if (task && task.status === "active") {
+        task.track_points = [...orderedPoints.value];
+        await putRecord(stores.patrolTasks, task);
+      }
+    }
     return true;
   } catch (e) {
     notifySamplingIssue(`${describeGeoError(e, "定位失败")}，轨迹点未记录`);
@@ -795,6 +817,7 @@ async function startPatrol() {
   lastSampleAt.value = 0;
   mapAutoViewportDone = false;
   isOfflinePatrol.value = false;
+  checkpointCounter = 0;
 
   gpsBusy.value = true;
   try {
@@ -848,10 +871,7 @@ async function stopPatrol() {
     await nextTick();
     let mapSnapshot = null;
     try {
-      mapSnapshot = await Promise.race([
-        captureMapSnapshotOrNull(),
-        new Promise((_, r) => setTimeout(() => r(new Error("snap_timeout")), 4000)),
-      ]);
+      mapSnapshot = await captureMapSnapshotOrNull();
     } catch {}
     if (mapSnapshot && typeof mapSnapshot !== "string") mapSnapshot = null;
     const ended = {
@@ -974,23 +994,179 @@ async function saveEvent() {
   }
 }
 
+function resolveTiandituKey() {
+  const meta = typeof document !== "undefined"
+    ? String(document.querySelector("meta[name='forestry-tianditu-key']")?.getAttribute("content") || "").trim()
+    : "";
+  return meta || String(import.meta.env.VITE_TIANDITU_JS_KEY || "").trim() || "";
+}
+
+function lngLatToTileX(lng, zoom) {
+  const n = Math.pow(2, zoom);
+  return ((Number(lng) + 180) / 360) * n;
+}
+
+function lngLatToTileY(lat, zoom) {
+  const n = Math.pow(2, zoom);
+  const r = Math.tan((Number(lat) * Math.PI) / 180);
+  const s = 1 / Math.cos((Number(lat) * Math.PI) / 180);
+  return (1 - Math.log(r + s) / Math.PI) / 2 * n;
+}
+
+function tileXToLng(x, zoom) {
+  const n = Math.pow(2, zoom);
+  return (Number(x) / n) * 360 - 180;
+}
+
+function tileYToLat(y, zoom) {
+  const n = Math.pow(2, zoom);
+  return (Math.atan(Math.sinh(Math.PI * (1 - (2 * Number(y)) / n))) * 180) / Math.PI;
+}
+
+async function renderMapToCanvasDataUrl(points, events, width, height) {
+  const tk = resolveTiandituKey();
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return "";
+  ctx.fillStyle = "#e8ecf1";
+  ctx.fillRect(0, 0, width, height);
+
+  const pts = (points || []).filter(isValidLngLat);
+  const evPts = (events || []).filter(isValidLngLat);
+  const allPts = [...pts, ...evPts];
+  if (!allPts.length) return canvas.toDataURL("image/jpeg", 0.92);
+
+  const lngs = allPts.map((p) => Number(p.lng));
+  const lats = allPts.map((p) => Number(p.lat));
+  const minLng = Math.min(...lngs);
+  const maxLng = Math.max(...lngs);
+  const minLat = Math.min(...lats);
+  const maxLat = Math.max(...lats);
+  const dx = Math.max(1e-9, maxLng - minLng);
+  const dy = Math.max(1e-9, maxLat - minLat);
+  const pad = 24;
+  const plotW = width - pad * 2;
+  const plotH = height - pad * 2;
+
+  const toPixelXY = (row) => {
+    const x = pad + ((Number(row.lng) - minLng) / dx) * plotW;
+    const y = height - pad - ((Number(row.lat) - minLat) / dy) * plotH;
+    return [x, y];
+  };
+
+  if (tk) {
+    const range = Math.max(dx, dy);
+    let zoom = 15;
+    if (range < 0.002) zoom = 17;
+    else if (range < 0.01) zoom = 16;
+    else if (range < 0.05) zoom = 15;
+    else if (range < 0.2) zoom = 14;
+    else if (range < 1) zoom = 13;
+    else zoom = 12;
+
+    const minTx = Math.floor(lngLatToTileX(minLng, zoom));
+    const maxTx = Math.floor(lngLatToTileX(maxLng, zoom));
+    const minTy = Math.floor(lngLatToTileY(maxLat, zoom));
+    const maxTy = Math.floor(lngLatToTileY(minLat, zoom));
+    const tileCount = (maxTx - minTx + 1) * (maxTy - minTy + 1);
+    const TILE_SIZE = 256;
+
+    if (tileCount <= 25) {
+      const tileLoads = [];
+      for (let tx = minTx; tx <= maxTx; tx += 1) {
+        for (let ty = minTy; ty <= maxTy; ty += 1) {
+          const s = ((tx + ty) % 8) + 1;
+          const url = `https://t${s}.tianditu.gov.cn/img_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=img&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX=${zoom}&TILEROW=${ty}&TILECOL=${tx}&tk=${encodeURIComponent(tk)}`;
+          tileLoads.push({ tx, ty, url });
+        }
+      }
+
+      const tileResults = await Promise.allSettled(
+        tileLoads.map((tile) =>
+          new Promise((resolve, reject) => {
+            const img = new Image();
+            img.crossOrigin = "anonymous";
+            img.onload = () => resolve({ img, tx: tile.tx, ty: tile.ty });
+            img.onerror = () => reject(new Error("tile_fail"));
+            const timer = setTimeout(() => reject(new Error("tile_timeout")), 6000);
+            img.onload = () => {
+              clearTimeout(timer);
+              resolve({ img, tx: tile.tx, ty: tile.ty });
+            };
+            img.onerror = () => {
+              clearTimeout(timer);
+              reject(new Error("tile_fail"));
+            };
+            img.src = tile.url;
+          })
+        )
+      );
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, width, height);
+      ctx.clip();
+
+      const tileScale = (canvas.width / plotW) * ((maxTx - minTx + 1) * TILE_SIZE / (width / 256));
+
+      for (const result of tileResults) {
+        if (result.status !== "fulfilled") continue;
+        const { img, tx, ty } = result.value;
+        const topLeftLng = tileXToLng(tx, zoom);
+        const topLeftLat = tileYToLat(ty, zoom);
+        const bottomRightLng = tileXToLng(tx + 1, zoom);
+        const bottomRightLat = tileYToLat(ty + 1, zoom);
+
+        const [sx, ey] = toPixelXY({ lng: topLeftLng, lat: topLeftLat });
+        const [ex, sy] = toPixelXY({ lng: bottomRightLng, lat: bottomRightLat });
+
+        if (isNaN(sx) || isNaN(sy) || isNaN(ex) || isNaN(ey)) continue;
+        try { ctx.drawImage(img, Math.min(sx, ex), Math.min(sy, ey), Math.abs(ex - sx), Math.abs(ey - sy)); } catch {}
+      }
+      ctx.restore();
+    }
+  }
+
+  if (pts.length >= 2) {
+    ctx.strokeStyle = "#07c160";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    pts.forEach((p, i) => {
+      const [x, y] = toPixelXY(p);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  } else if (pts.length === 1) {
+    const [x, y] = toPixelXY(pts[0]);
+    ctx.fillStyle = "#07c160";
+    ctx.beginPath();
+    ctx.arc(x, y, 8, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  for (const ev of evPts) {
+    const [x, y] = toPixelXY(ev);
+    ctx.fillStyle = eventTypeColor(ev.type);
+    ctx.beginPath();
+    ctx.arc(x, y, 7, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+
+  return canvas.toDataURL("image/jpeg", 0.92);
+}
+
 async function captureMapSnapshotOrNull() {
-  const el = mapDivRef.value;
-  if (!el) return null;
   try {
-    const { default: html2canvas } = await import("html2canvas");
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
-    const canvas = await Promise.race([
-      html2canvas(el, {
-        useCORS: true,
-        allowTaint: true,
-        backgroundColor: "#f7f8fa",
-        scale: dpr,
-        logging: false,
-      }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 5000)),
+    return await Promise.race([
+      renderMapToCanvasDataUrl(orderedPoints.value, events.value, 800, 480),
+      new Promise((_, r) => setTimeout(() => r(new Error("snap_timeout")), 5000)),
     ]);
-    return canvas.toDataURL("image/jpeg", 0.9);
   } catch {
     return null;
   }
@@ -1021,9 +1197,18 @@ function openPdfConfig() {
 async function exportPatrolPdf() {
   exportPdfBusy.value = true;
   try {
-    const useCanvasMap =
-      orderedPoints.value.length >= 1 || events.value.length > 0;
-    const mapSnapshot = useCanvasMap ? null : await captureMapSnapshotOrNull();
+    let mapSnapshot = null;
+    if (orderedPoints.value.length >= 1 || events.value.length > 0) {
+      try {
+        mapSnapshot = await Promise.race([
+          renderMapToCanvasDataUrl(orderedPoints.value, events.value, 1080, 460),
+          new Promise((_, r) => setTimeout(() => r(new Error("pdf_map_timeout")), 8000)),
+        ]);
+      } catch {}
+    }
+    if (!mapSnapshot) {
+      try { mapSnapshot = await captureMapSnapshotOrNull(); } catch {}
+    }
     const generateTimeText = pdfForm.value.generateTime
       ? String(pdfForm.value.generateTime).replace("T", " ")
       : formatTime(Date.now());
@@ -1154,6 +1339,7 @@ onUnmounted(() => {
             可在服务器 backend/.env.local 中配置 TIANDITU_JS_KEY；或在当前页 index.html 增加 meta forestry-tianditu-key
             后强刷，无需重新 npm build。
           </p>
+          <van-button size="small" plain type="primary" @click="mapError=''; void initAmapIfNeeded()">重新加载地图</van-button>
         </div>
         <div class="map-stage">
           <div ref="mapDivRef" class="patrol-map" />
@@ -1530,6 +1716,10 @@ onUnmounted(() => {
   margin: 8px 0 0;
   font-size: 12px;
   color: #969799;
+}
+
+.map-fallback .van-button {
+  margin-top: 8px;
 }
 
 .play-label {
