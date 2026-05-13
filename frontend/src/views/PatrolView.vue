@@ -140,7 +140,6 @@ let mapInst = null;
 let polylineInst = null;
 const trackDotMarkers = [];
 let playbackMarker = null;
-let playbackTimer = null;
 let playbackFraction = 0;
 const latestDeviceCoord = ref(null);
 let mapAutoViewportDone = false;
@@ -1169,20 +1168,26 @@ async function exportPdfForHistoryTask(task) {
     return;
   }
   const sortedPts = [...pts].sort((a, b) => (a.recorded_at || 0) - (b.recorded_at || 0));
+  const dMeters = task.distance_meters || 0;
+  const dMs = task.duration_ms || 0;
+  const avgKmh = dMs > 0 ? (dMeters / (dMs / 1000)) * 3.6 : 0;
   resetPdfFormDefaults();
   showPdfConfigPopup.value = true;
-  points.value = sortedPts;
-  events.value = evs;
+  await nextTick();
+  exportPatrolPdf(sortedPts, evs, { distanceMeters: dMeters, durationMs: dMs, avgSpeedKmh: avgKmh });
 }
 
-async function exportPatrolPdf() {
+async function exportPatrolPdf(_pts, _evs, _stats) {
+  const usePts = _pts || orderedPoints.value;
+  const useEvs = _evs || events.value;
+  const useStats = _stats || patrolStats.value;
   exportPdfBusy.value = true;
   try {
     let mapSnapshot = null;
-    if (orderedPoints.value.length >= 1 || events.value.length > 0) {
+    if (usePts.length >= 1 || useEvs.length > 0) {
       try {
         mapSnapshot = await Promise.race([
-          renderMapToCanvasDataUrl(orderedPoints.value, events.value, 1080, 460),
+          renderMapToCanvasDataUrl(usePts, useEvs, 1080, 460),
           new Promise((_, r) => setTimeout(() => r(new Error("pdf_map_timeout")), 4000)),
         ]);
       } catch {}
@@ -1191,9 +1196,9 @@ async function exportPatrolPdf() {
       ? String(pdfForm.value.generateTime).replace("T", " ")
       : formatTime(Date.now());
     await exportPatrolPdfReport({
-      points: orderedPoints.value,
-      events: events.value,
-      patrolStats: patrolStats.value,
+      points: usePts,
+      events: useEvs,
+      patrolStats: useStats,
       reportMeta: {
         title: pdfForm.value.title || "智能巡护简报",
         patrolUser: pdfForm.value.patrolUser || "护林员",
