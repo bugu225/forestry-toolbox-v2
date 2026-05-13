@@ -141,7 +141,6 @@ let redrawPending = false;
 let redrawTimer = null;
 let polylineInst = null;
 const trackDotMarkers = [];
-const eventMarkers = [];
 let playbackMarker = null;
 let playbackTimer = null;
 let playbackFraction = 0;
@@ -210,9 +209,6 @@ function clearMapOverlays() {
   for (const m of trackDotMarkers.splice(0)) {
     try { mapInst.removeOverLay(m); } catch {}
   }
-  for (const m of eventMarkers.splice(0)) {
-    try { mapInst.removeOverLay(m); } catch {}
-  }
   if (playbackMarker) {
     mapInst.removeOverLay(playbackMarker);
     playbackMarker = null;
@@ -243,49 +239,22 @@ function dotIconDataUrl(hex, r, strokeW) {
   return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
 }
 
-function makeTrackDotMarker(lnglat) {
+function makeTrackDotMarker(lnglat, evColor) {
   let mk = null;
   try { mk = new TMapCtor.Marker(lnglat); } catch {
     try { mk = new TMapCtor.Marker({ lnglat }); } catch { return null; }
   }
   try {
     if (TMapCtor.Icon && TMapCtor.Point && typeof mk.setIcon === "function") {
+      const hex = evColor || "#07c160";
+      const r = evColor ? 8 : 5;
       const icon = new TMapCtor.Icon({
-        iconUrl: dotIconDataUrl("#07c160", 5, 1),
-        iconSize: new TMapCtor.Point(12, 12),
-        iconAnchor: new TMapCtor.Point(6, 6),
+        iconUrl: dotIconDataUrl(hex, r, 1),
+        iconSize: evColor ? new TMapCtor.Point(20, 20) : new TMapCtor.Point(12, 12),
+        iconAnchor: evColor ? new TMapCtor.Point(10, 10) : new TMapCtor.Point(6, 6),
       });
       mk.setIcon(icon);
     }
-  } catch {}
-  return mk;
-}
-
-function makeEventMarker(ev) {
-  const lnglat = toTLngLat(ev);
-  let mk = null;
-  try {
-    mk = new TMapCtor.Marker({ position: lnglat });
-  } catch {
-    try { mk = new TMapCtor.Marker(lnglat); } catch {
-      try { mk = new TMapCtor.Marker({ lnglat }); } catch { return null; }
-    }
-  }
-  try {
-    if (TMapCtor.Icon && TMapCtor.Point && typeof mk.setIcon === "function") {
-      const icon = new TMapCtor.Icon({
-        iconUrl: dotIconDataUrl(eventTypeColor(ev.type), 11, 3),
-        iconSize: new TMapCtor.Point(28, 28),
-        iconAnchor: new TMapCtor.Point(14, 14),
-      });
-      mk.setIcon(icon);
-    }
-  } catch {}
-  mk._patrolEventData = ev;
-  try {
-    mk.addEventListener("click", () => {
-      focusEventOnMap(ev);
-    });
   } catch {}
   return mk;
 }
@@ -307,9 +276,20 @@ function doRedrawMapLayers() {
   const pathArr = orderedPoints.value;
   const path = pathArr.map((p) => toTLngLat(p));
 
-  for (let i = 0; i < path.length; i += 1) {
-    const mk = makeTrackDotMarker(path[i]);
+  const evMap = new Map();
+  for (const ev of events.value) {
+    if (ev.point_local_id) evMap.set(ev.point_local_id, ev);
+  }
+
+  for (let i = 0; i < pathArr.length; i += 1) {
+    const pt = pathArr[i];
+    const ev = evMap.get(pt.local_id);
+    const mk = makeTrackDotMarker(path[i], ev ? eventTypeColor(ev.type) : null);
     if (mk) {
+      if (ev) {
+        mk._patrolEventData = ev;
+        try { mk.addEventListener("click", () => { focusEventOnMap(ev); }); } catch {}
+      }
       try { mapInst.addOverLay(mk); trackDotMarkers.push(mk); } catch {}
     }
   }
@@ -328,16 +308,6 @@ function doRedrawMapLayers() {
     }
   } else if (path.length === 1 && !mapAutoViewportDone) {
     mapInst.centerAndZoom(path[0], 17);
-  }
-
-  for (const ev of events.value) {
-    if (!isValidLngLat(ev)) continue;
-    const mk = makeEventMarker(ev);
-    if (!mk) continue;
-    try {
-      mapInst.addOverLay(mk);
-      eventMarkers.push(mk);
-    } catch {}
   }
 
   const idx = playbackIndex.value;
@@ -635,7 +605,7 @@ async function viewHistoryOnMap(task) {
   endedTaskView.value = task;
   isOfflinePatrol.value = task.offline_mode === true;
   points.value = [...pts].sort((a, b) => (a.recorded_at || 0) - (b.recorded_at || 0));
-  await loadPointsAndEvents(task.local_id);
+  events.value = Array.isArray(task.events) ? [...task.events] : [];
   patrolHistoryDrawerOpen.value = false;
   mapAutoViewportDone = false;
   void nextTick(() => {
@@ -660,7 +630,7 @@ async function replayOfflineTrack(task) {
   endedTaskView.value = task;
   isOfflinePatrol.value = task.offline_mode === true;
   points.value = [...pts].sort((a, b) => (a.recorded_at || 0) - (b.recorded_at || 0));
-  await loadPointsAndEvents(task.local_id);
+  events.value = Array.isArray(task.events) ? [...task.events] : [];
   patrolHistoryDrawerOpen.value = false;
   mapAutoViewportDone = false;
   void nextTick(async () => {
@@ -874,11 +844,14 @@ async function stopPatrol() {
       mapSnapshot = await captureMapSnapshotOrNull();
     } catch {}
     if (mapSnapshot && typeof mapSnapshot !== "string") mapSnapshot = null;
+    const allE = await getAllRecords(stores.patrolEvents);
+    const taskEvents = allE.filter((e) => e.task_local_id === taskId);
     const ended = {
       ...activeTask.value,
       ended_at: Date.now(),
       status: "ended",
       track_points: trackSnapshot,
+      events: taskEvents,
       map_snapshot_dataurl: mapSnapshot || null,
       distance_meters: patrolStats.value.distanceMeters,
       duration_ms: patrolStats.value.durationMs,
@@ -922,17 +895,19 @@ async function resolveCoordsForEvent() {
   return {
     lat,
     lng,
+    point_id: last?.local_id || "",
     accuracy: Number(last.accuracy || 0),
     source: "track_point",
     snappedPointTs: Number(last.recorded_at || 0),
   };
 }
 
-async function persistPatrolEvent({ lat, lng, type, note, photo, accuracy, source }) {
+async function persistPatrolEvent({ lat, lng, point_id, type, note, photo, accuracy, source }) {
   if (!activeTask.value) return;
   const rec = {
     local_id: uid("pevt"),
     task_local_id: activeTask.value.local_id,
+    point_local_id: point_id || "",
     type,
     lat,
     lng,
@@ -969,10 +944,11 @@ async function saveEvent() {
   if (!activeTask.value) return;
   eventSaveBusy.value = true;
   try {
-    const { lat, lng, accuracy, source } = await resolveCoordsForEvent();
+    const { lat, lng, point_id, accuracy, source } = await resolveCoordsForEvent();
     await persistPatrolEvent({
       lat,
       lng,
+      point_id,
       type: eventType.value,
       note: (eventNote.value || "").trim(),
       photo: eventPhotoDataUrl.value || null,
@@ -984,7 +960,7 @@ async function saveEvent() {
     await nextTick();
     const el = document.getElementById("patrol-event-list");
     if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
-    showSuccessToast("事件已保存至列表");
+    showSuccessToast("事件已标记至最新轨迹点");
   } catch {
     showEventSheet.value = false;
     await nextTick();
@@ -1194,6 +1170,20 @@ function openPdfConfig() {
   showPdfConfigPopup.value = true;
 }
 
+async function exportPdfForHistoryTask(task) {
+  const pts = Array.isArray(task.track_points) ? task.track_points : [];
+  const evs = Array.isArray(task.events) ? task.events : [];
+  if (!pts.length && !evs.length) {
+    showToast("该记录无巡护数据");
+    return;
+  }
+  const sortedPts = [...pts].sort((a, b) => (a.recorded_at || 0) - (b.recorded_at || 0));
+  resetPdfFormDefaults();
+  showPdfConfigPopup.value = true;
+  points.value = sortedPts;
+  events.value = evs;
+}
+
 async function exportPatrolPdf() {
   exportPdfBusy.value = true;
   try {
@@ -1373,18 +1363,6 @@ onUnmounted(() => {
         </template>
       </div>
 
-      <div v-if="points.length || events.length || endedTaskView" class="export-row">
-        <van-button
-          type="success"
-          block
-          plain
-          :loading="exportPdfBusy"
-          @click="openPdfConfig"
-        >
-          导出PDF巡护报告
-        </van-button>
-      </div>
-
       <div class="storage-toggle-row">
         <van-button size="small" :type="showEventList ? 'primary' : 'default'" plain @click="showEventList = !showEventList">事件</van-button>
         <van-button size="small" :type="showTrackList ? 'primary' : 'default'" plain @click="showTrackList = !showTrackList">轨迹</van-button>
@@ -1437,12 +1415,15 @@ onUnmounted(() => {
               <span>时长 {{ formatDuration(task.duration_ms) }}</span>
               <span class="stats-sep">·</span>
               <span>{{ Array.isArray(task.track_points) ? task.track_points.length : 0 }} 个轨迹点</span>
+              <span v-if="Array.isArray(task.events) && task.events.length" class="stats-sep">·</span>
+              <span v-if="Array.isArray(task.events) && task.events.length">{{ task.events.length }} 个事件</span>
             </div>
             <img v-if="task.map_snapshot_dataurl" :src="task.map_snapshot_dataurl" alt="巡护地图" class="history-card-thumb" />
           </div>
           <div class="history-card-actions">
             <van-button size="small" type="primary" plain @click="viewHistoryOnMap(task)">地图查看</van-button>
             <van-button v-if="task.offline_mode" size="small" type="warning" plain @click="replayOfflineTrack(task)">重现轨迹</van-button>
+            <van-button size="small" type="success" plain @click="exportPdfForHistoryTask(task)">导出PDF</van-button>
             <van-button size="small" type="danger" plain @click="deleteHistoryTask(task)">删除</van-button>
           </div>
         </div>
