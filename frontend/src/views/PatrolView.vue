@@ -137,8 +137,6 @@ const mapDivRef = ref(null);
 const mapError = ref("");
 let TMapCtor = null;
 let mapInst = null;
-let redrawPending = false;
-let redrawTimer = null;
 let polylineInst = null;
 const trackDotMarkers = [];
 let playbackMarker = null;
@@ -261,13 +259,7 @@ function makeTrackDotMarker(lnglat, evColor) {
 
 function redrawMapLayers() {
   if (!mapInst || !TMapCtor) return;
-  if (redrawPending) return;
-  redrawPending = true;
-  if (redrawTimer) clearTimeout(redrawTimer);
-  redrawTimer = setTimeout(() => {
-    redrawPending = false;
-    void doRedrawMapLayers();
-  }, 80);
+  doRedrawMapLayers();
 }
 
 function doRedrawMapLayers() {
@@ -847,9 +839,8 @@ async function stopPatrol() {
     clearSamplingTimer();
     const taskId = activeTask.value.local_id;
     const trackSnapshot = [...orderedPoints.value];
+    const taskEvents = [...events.value];
 
-    const allE = await getAllRecords(stores.patrolEvents);
-    const taskEvents = allE.filter((e) => e.task_local_id === taskId);
     const ended = {
       ...activeTask.value,
       ended_at: Date.now(),
@@ -861,15 +852,8 @@ async function stopPatrol() {
       duration_ms: patrolStats.value.durationMs,
     };
     await putRecord(stores.patrolTasks, ended);
-
-    captureMapSnapshotOrNull().then((url) => {
-      if (url && typeof url === "string") {
-        ended.map_snapshot_dataurl = url;
-        putRecord(stores.patrolTasks, ended).catch(() => {});
-      }
-    }).catch(() => {});
-
     await deletePatrolPointsForTask(taskId);
+
     endedTaskView.value = ended;
     activeTask.value = null;
     isOfflinePatrol.value = false;
@@ -931,7 +915,7 @@ async function persistPatrolEvent({ lat, lng, point_id, type, note, photo, accur
     recorded_at: Date.now(),
   };
   await putRecord(stores.patrolEvents, rec);
-  await loadPointsAndEvents(activeTask.value.local_id);
+  events.value = [...events.value, rec].sort((a, b) => (b.recorded_at || 0) - (a.recorded_at || 0));
   if (mapInst && TMapCtor) {
     redrawMapLayers();
     if (isValidLngLat(rec)) {
@@ -1155,17 +1139,6 @@ async function renderMapToCanvasDataUrl(points, events, width, height) {
   return canvas.toDataURL("image/jpeg", 0.92);
 }
 
-async function captureMapSnapshotOrNull() {
-  try {
-    return await Promise.race([
-      renderMapToCanvasDataUrl(orderedPoints.value, events.value, 800, 480),
-      new Promise((_, r) => setTimeout(() => r(new Error("snap_timeout")), 2500)),
-    ]);
-  } catch {
-    return null;
-  }
-}
-
 function resetPdfFormDefaults() {
   const now = new Date();
   const p = (n) => String(n).padStart(2, "0");
@@ -1213,9 +1186,6 @@ async function exportPatrolPdf() {
           new Promise((_, r) => setTimeout(() => r(new Error("pdf_map_timeout")), 4000)),
         ]);
       } catch {}
-    }
-    if (!mapSnapshot) {
-      try { mapSnapshot = await captureMapSnapshotOrNull(); } catch {}
     }
     const generateTimeText = pdfForm.value.generateTime
       ? String(pdfForm.value.generateTime).replace("T", " ")
