@@ -476,12 +476,12 @@ function focusEventOnMap(ev) {
     return;
   }
   const pos = toTLngLat(ev);
-  mapInst.panTo(pos);
-  if (typeof mapInst.centerAndZoom === "function") {
-    mapInst.centerAndZoom(pos, 17);
-  }
+  mapInst.centerAndZoom(pos, 17);
   selectedEventDetail.value = ev;
   showEventDetailPopup.value = true;
+  void nextTick(() => {
+    if (mapInst && TMapCtor) redrawMapLayers();
+  });
 }
 
 function refocusSelectedEventOnMap() {
@@ -490,11 +490,8 @@ function refocusSelectedEventOnMap() {
   showEventDetailPopup.value = false;
   void nextTick(() => {
     if (!mapInst || !TMapCtor) return;
-    const pos = toTLngLat(ev);
-    mapInst.panTo(pos);
-    if (typeof mapInst.centerAndZoom === "function") {
-      mapInst.centerAndZoom(pos, 17);
-    }
+    mapInst.centerAndZoom(toTLngLat(ev), 17);
+    redrawMapLayers();
   });
 }
 
@@ -849,7 +846,14 @@ async function stopPatrol() {
       try { mapInst.setViewport(trackSnapshot.map((p) => toTLngLat(p))); } catch {}
     }
     await nextTick();
-    const mapSnapshot = await captureMapSnapshotOrNull();
+    let mapSnapshot = null;
+    try {
+      mapSnapshot = await Promise.race([
+        captureMapSnapshotOrNull(),
+        new Promise((_, r) => setTimeout(() => r(new Error("snap_timeout")), 4000)),
+      ]);
+    } catch {}
+    if (mapSnapshot && typeof mapSnapshot !== "string") mapSnapshot = null;
     const ended = {
       ...activeTask.value,
       ended_at: Date.now(),
@@ -921,8 +925,12 @@ async function persistPatrolEvent({ lat, lng, type, note, photo, accuracy, sourc
   };
   await putRecord(stores.patrolEvents, rec);
   await loadPointsAndEvents(activeTask.value.local_id);
-  await nextTick();
-  if (mapInst && TMapCtor) redrawMapLayers();
+  if (mapInst && TMapCtor) {
+    redrawMapLayers();
+    if (isValidLngLat(rec)) {
+      try { mapInst.panTo(toTLngLat(rec)); } catch {}
+    }
+  }
   return rec;
 }
 
@@ -942,7 +950,7 @@ async function saveEvent() {
   eventSaveBusy.value = true;
   try {
     const { lat, lng, accuracy, source } = await resolveCoordsForEvent();
-    const rec = await persistPatrolEvent({
+    await persistPatrolEvent({
       lat,
       lng,
       type: eventType.value,
@@ -951,11 +959,6 @@ async function saveEvent() {
       accuracy,
       source,
     });
-    if (mapInst && TMapCtor && rec) {
-      mapInst.panTo(toTLngLat(rec));
-      await nextTick();
-      redrawMapLayers();
-    }
     showEventSheet.value = false;
     showEventList.value = true;
     await nextTick();
@@ -976,14 +979,17 @@ async function captureMapSnapshotOrNull() {
   if (!el) return null;
   try {
     const { default: html2canvas } = await import("html2canvas");
-    const dpr = typeof window !== "undefined" ? Math.min(2, window.devicePixelRatio || 1) : 1;
-    const canvas = await html2canvas(el, {
-      useCORS: true,
-      allowTaint: true,
-      backgroundColor: "#f7f8fa",
-      scale: dpr,
-      logging: false,
-    });
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const canvas = await Promise.race([
+      html2canvas(el, {
+        useCORS: true,
+        allowTaint: true,
+        backgroundColor: "#f7f8fa",
+        scale: dpr,
+        logging: false,
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 5000)),
+    ]);
     return canvas.toDataURL("image/jpeg", 0.9);
   } catch {
     return null;
@@ -1175,8 +1181,14 @@ onUnmounted(() => {
         <van-button v-if="!activeTask" type="primary" block :loading="gpsBusy" @click="startPatrol">
           {{ endedTaskView ? "开始新巡护" : "开始巡护" }}
         </van-button>
+        <template v-if="activeTask">
+          <van-button type="danger" block plain :loading="stopping" @click="stopPatrol">结束巡护</van-button>
+          <van-button type="warning" block plain @click="openEventSheet">标记事件</van-button>
+        </template>
+      </div>
+
+      <div v-if="points.length || events.length || endedTaskView" class="export-row">
         <van-button
-          v-if="points.length || events.length || endedTaskView"
           type="success"
           block
           plain
@@ -1185,10 +1197,6 @@ onUnmounted(() => {
         >
           导出PDF巡护报告
         </van-button>
-        <template v-if="activeTask">
-          <van-button type="danger" block plain :loading="stopping" @click="stopPatrol">结束巡护</van-button>
-          <van-button type="warning" block plain @click="openEventSheet">标记事件</van-button>
-        </template>
       </div>
 
       <div class="storage-toggle-row">
@@ -1426,6 +1434,12 @@ onUnmounted(() => {
 
 .compact-actions {
   margin-bottom: 10px;
+}
+
+.export-row {
+  margin-bottom: 12px;
+  padding: 8px 0 4px;
+  border-top: 1px solid #ebedf0;
 }
 
 .storage-toggle-row {
