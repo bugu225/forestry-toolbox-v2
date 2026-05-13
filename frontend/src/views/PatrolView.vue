@@ -74,6 +74,8 @@ const events = ref([]);
 const samplingTimer = ref(null);
 const gpsBusy = ref(false);
 const eventSaveBusy = ref(false);
+const stopping = ref(false);
+const isOfflinePatrol = ref(false);
 
 const showEventSheet = ref(false);
 const eventType = ref("pest");
@@ -259,8 +261,12 @@ function makeTrackDotMarker(lnglat) {
 function makeEventMarker(ev) {
   const lnglat = toTLngLat(ev);
   let mk = null;
-  try { mk = new TMapCtor.Marker(lnglat); } catch {
-    try { mk = new TMapCtor.Marker({ lnglat }); } catch { return null; }
+  try {
+    mk = new TMapCtor.Marker({ position: lnglat });
+  } catch {
+    try { mk = new TMapCtor.Marker(lnglat); } catch {
+      try { mk = new TMapCtor.Marker({ lnglat }); } catch { return null; }
+    }
   }
   try {
     if (TMapCtor.Icon && TMapCtor.Point && typeof mk.setIcon === "function") {
@@ -272,7 +278,6 @@ function makeEventMarker(ev) {
       mk.setIcon(icon);
     }
   } catch {}
-  mk.setTitle((eventTypeLabel(ev.type) + " " + (ev.note || "")).trim());
   mk._patrolEventData = ev;
   try {
     mk.addEventListener("click", () => {
@@ -561,7 +566,7 @@ async function loadPointsAndEvents(taskId) {
   const task = allTasks.find((t) => t.local_id === taskId);
   events.value = allE
     .filter((e) => e.task_local_id === taskId)
-    .sort((a, b) => b.recorded_at - a.recorded_at);
+    .sort((a, b) => (b.recorded_at || 0) - (a.recorded_at || 0));
 
   let pts = [];
   if (task && Array.isArray(task.track_points) && task.track_points.length > 0) {
@@ -571,10 +576,12 @@ async function loadPointsAndEvents(taskId) {
     pts = allP.filter((p) => p.task_local_id === taskId);
   }
   const sortPts = (arr) => [...arr].sort((a, b) => (a.recorded_at || 0) - (b.recorded_at || 0));
-  if (task?.status === "active" && pts.length === 0) {
+  if (pts.length === 0 && task?.status === "active") {
     return;
   }
-  points.value = sortPts(pts);
+  if (pts.length > 0) {
+    points.value = sortPts(pts);
+  }
 }
 
 async function loadPatrolHistory() {
@@ -608,17 +615,45 @@ async function deleteHistoryTask(task) {
   showSuccessToast("已删除");
 }
 
-function viewHistoryOnMap(task) {
+async function viewHistoryOnMap(task) {
   const pts = Array.isArray(task.track_points) ? task.track_points : [];
   if (!pts.length) {
     showToast("该巡护无轨迹数据");
     return;
   }
   endedTaskView.value = task;
+  isOfflinePatrol.value = task.offline_mode === true;
   points.value = [...pts].sort((a, b) => (a.recorded_at || 0) - (b.recorded_at || 0));
+  await loadPointsAndEvents(task.local_id);
   patrolHistoryDrawerOpen.value = false;
   mapAutoViewportDone = false;
   void nextTick(() => {
+    if (mapInst && TMapCtor) {
+      redrawMapLayers();
+    } else if (effectiveOnline.value) {
+      void initAmapIfNeeded();
+    }
+  });
+}
+
+async function replayOfflineTrack(task) {
+  const pts = Array.isArray(task.track_points) ? task.track_points : [];
+  if (!pts.length) {
+    showToast("该巡护无轨迹数据");
+    return;
+  }
+  if (!effectiveOnline.value) {
+    showToast("当前离线，联网后可重现轨迹");
+    return;
+  }
+  endedTaskView.value = task;
+  isOfflinePatrol.value = task.offline_mode === true;
+  points.value = [...pts].sort((a, b) => (a.recorded_at || 0) - (b.recorded_at || 0));
+  await loadPointsAndEvents(task.local_id);
+  patrolHistoryDrawerOpen.value = false;
+  mapAutoViewportDone = false;
+  void nextTick(async () => {
+    await initAmapIfNeeded();
     if (mapInst && TMapCtor) {
       redrawMapLayers();
     }
@@ -762,6 +797,7 @@ async function startPatrol() {
   events.value = [];
   lastSampleAt.value = 0;
   mapAutoViewportDone = false;
+  isOfflinePatrol.value = false;
 
   gpsBusy.value = true;
   try {
@@ -777,16 +813,23 @@ async function startPatrol() {
   } finally {
     gpsBusy.value = false;
   }
+  const offline = !effectiveOnline.value;
   const task = {
     local_id: uid("ptsk"),
     started_at: Date.now(),
     ended_at: null,
     status: "active",
     title: `巡护 ${formatTime(Date.now())}`,
+    offline_mode: offline,
   };
   await putRecord(stores.patrolTasks, task);
   activeTask.value = task;
-  showSuccessToast("已开始巡护");
+  isOfflinePatrol.value = offline;
+  if (offline) {
+    showToast("离线记录中 · GPS持续记录，联网后可查看地图轨迹");
+  } else {
+    showSuccessToast("已开始巡护");
+  }
   startSamplingLoop(true);
 }
 
@@ -797,29 +840,35 @@ async function stopPatrol() {
   } catch {
     return;
   }
-  clearSamplingTimer();
-  const taskId = activeTask.value.local_id;
-  const trackSnapshot = [...orderedPoints.value];
-  if (mapInst && TMapCtor && trackSnapshot.length >= 2) {
-    try { mapInst.setViewport(trackSnapshot.map((p) => toTLngLat(p))); } catch {}
+  stopping.value = true;
+  try {
+    clearSamplingTimer();
+    const taskId = activeTask.value.local_id;
+    const trackSnapshot = [...orderedPoints.value];
+    if (mapInst && TMapCtor && trackSnapshot.length >= 2) {
+      try { mapInst.setViewport(trackSnapshot.map((p) => toTLngLat(p))); } catch {}
+    }
+    await nextTick();
+    const mapSnapshot = await captureMapSnapshotOrNull();
+    const ended = {
+      ...activeTask.value,
+      ended_at: Date.now(),
+      status: "ended",
+      track_points: trackSnapshot,
+      map_snapshot_dataurl: mapSnapshot || null,
+      distance_meters: patrolStats.value.distanceMeters,
+      duration_ms: patrolStats.value.durationMs,
+    };
+    await putRecord(stores.patrolTasks, ended);
+    await deletePatrolPointsForTask(taskId);
+    endedTaskView.value = ended;
+    activeTask.value = null;
+    isOfflinePatrol.value = false;
+    await loadPatrolHistory();
+    showSuccessToast(`巡护已结束 · ${trackSnapshot.length}个轨迹点 · ${formatDistance(patrolStats.value.distanceMeters)}`);
+  } finally {
+    stopping.value = false;
   }
-  await nextTick();
-  const mapSnapshot = await captureMapSnapshotOrNull();
-  const ended = {
-    ...activeTask.value,
-    ended_at: Date.now(),
-    status: "ended",
-    track_points: trackSnapshot,
-    map_snapshot_dataurl: mapSnapshot || null,
-    distance_meters: patrolStats.value.distanceMeters,
-    duration_ms: patrolStats.value.durationMs,
-  };
-  await putRecord(stores.patrolTasks, ended);
-  await deletePatrolPointsForTask(taskId);
-  endedTaskView.value = ended;
-  activeTask.value = null;
-  await loadPatrolHistory();
-  showSuccessToast("巡护已结束，轨迹与地图已保存");
 }
 
 async function restoreActivePatrol() {
@@ -829,6 +878,7 @@ async function restoreActivePatrol() {
     .sort((a, b) => (b.started_at || 0) - (a.started_at || 0))[0];
   if (active) {
     activeTask.value = active;
+    isOfflinePatrol.value = active.offline_mode === true;
     mapAutoViewportDone = false;
     await loadPointsAndEvents(active.local_id);
     const latest = [...points.value].sort((a, b) => (b.recorded_at || 0) - (a.recorded_at || 0))[0];
@@ -903,6 +953,8 @@ async function saveEvent() {
     });
     if (mapInst && TMapCtor && rec) {
       mapInst.panTo(toTLngLat(rec));
+      await nextTick();
+      redrawMapLayers();
     }
     showEventSheet.value = false;
     showEventList.value = true;
@@ -913,7 +965,7 @@ async function saveEvent() {
   } catch {
     showEventSheet.value = false;
     await nextTick();
-    showFailToast("无法获取有效位置，事件未保存（可稍等定位或走几步再试）");
+    showFailToast("无法获取有效位置，事件未保存（请确认GPS已定位且已记录轨迹点）");
   } finally {
     eventSaveBusy.value = false;
   }
@@ -1072,7 +1124,7 @@ onUnmounted(() => {
       <div class="top-row">
         <div v-if="activeTask" class="status-chip">
           <span class="dot" />
-          巡护中
+          巡护中{{ isOfflinePatrol ? ' · 离线记录中' : '' }}
         </div>
         <div v-else-if="endedTaskView" class="status-chip ended">已结束</div>
         <div v-else class="status-chip muted">未开始</div>
@@ -1134,7 +1186,7 @@ onUnmounted(() => {
           导出PDF巡护报告
         </van-button>
         <template v-if="activeTask">
-          <van-button type="danger" block plain @click="stopPatrol">结束巡护</van-button>
+          <van-button type="danger" block plain :loading="stopping" @click="stopPatrol">结束巡护</van-button>
           <van-button type="warning" block plain @click="openEventSheet">标记事件</van-button>
         </template>
       </div>
@@ -1196,6 +1248,7 @@ onUnmounted(() => {
           </div>
           <div class="history-card-actions">
             <van-button size="small" type="primary" plain @click="viewHistoryOnMap(task)">地图查看</van-button>
+            <van-button v-if="task.offline_mode" size="small" type="warning" plain @click="replayOfflineTrack(task)">重现轨迹</van-button>
             <van-button size="small" type="danger" plain @click="deleteHistoryTask(task)">删除</van-button>
           </div>
         </div>

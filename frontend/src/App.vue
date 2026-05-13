@@ -87,4 +87,10 @@ body {
 .app-root {
   padding-bottom: 28px;
 }
+
+.van-toast {
+  background: rgba(50, 50, 51, 0.88) !important;
+  color: #fff !important;
+}
+
 </style>
