@@ -1,22 +1,18 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from "vue";
-import { storeToRefs } from "pinia";
 import { useRouter } from "vue-router";
 import { showDialog, showToast } from "vant";
+import { storeToRefs } from "pinia";
 import { describeGeoError, getCurrentPositionCompat } from "../utils/geolocation";
 import apiClient from "../api/client";
-import { useAuthStore } from "../stores/auth";
 import { useNetworkStore } from "../stores/network";
 
 const PWA_TIP_DISMISS_KEY = "ftb2_home_pwa_tip_dismissed"
-const authStore = useAuthStore();
 const networkStore = useNetworkStore();
 const { simulateOffline, effectiveOnline } = storeToRefs(networkStore);
 const router = useRouter();
 
 const moreActive = ref([]);
-
-const username = computed(() => authStore.user?.username || "\u7528\u6237");
 
 const networkHint = computed(() => {
   if (simulateOffline.value) {
@@ -158,11 +154,6 @@ function goPatrol() {
   router.push({ name: "patrol" });
 }
 
-function logout() {
-  authStore.clearAuth();
-  router.push({ name: "login" });
-}
-
 function onSimulateOfflineChange(checked) {
   networkStore.setSimulateOffline(checked);
   showToast({
@@ -249,7 +240,7 @@ async function runAllInOneDiagnostics() {
   lines.push("\u5982\u67d0\u9879\u68c0\u6d4b\u672a\u901a\u8fc7\uff0c\u53ef\u5c1d\u8bd5\uff1a");
   lines.push("1. \u5728\u624b\u673a\u300c\u8bbe\u7f6e\u300d\u4e2d\u5f00\u542f\u672c\u5e94\u7528\u7684\u5b9a\u4f4d\u548c\u76f8\u673a\u6743\u9650\uff1b");
   lines.push("2. \u68c0\u67e5\u624b\u673a\u7f51\u7edc\uff0c\u5207\u6362\u5230\u7a33\u5b9a\u7684 WiFi \u6216\u79fb\u52a8\u6570\u636e\uff1b");
-  lines.push("3. \u9000\u51fa\u8d26\u53f7\u540e\u91cd\u65b0\u767b\u5f55\u518d\u8bd5\u3002");
+  lines.push("3. \u53ef\u5c1d\u8bd5\u5207\u6362 WiFi \u6216\u79fb\u52a8\u6570\u636e\u540e\u91cd\u8bd5\u3002");
 
   showDialog({
     title: "\u4e00\u952e\u68c0\u6d4b",
@@ -295,7 +286,7 @@ onUnmounted(() => {
     <van-nav-bar title="首页" />
 
     <div class="home-main">
-      <p class="welcome">你好，{{ username }}</p>
+      <p class="welcome">林业智能巡护助手</p>
 
       <div v-if="showPwaTip" class="pwa-card" role="region" aria-label="添加到主屏幕提示">
         <div class="pwa-card-head">
@@ -353,10 +344,19 @@ onUnmounted(() => {
               </template>
             </van-cell>
             <van-button type="primary" plain block @click="runAllInOneDiagnostics">一键检测</van-button>
-            <van-button class="more-logout" type="danger" block round @click="logout">退出登录</van-button>
           </div>
         </van-collapse-item>
       </van-collapse>
+
+      <div class="beian-section">
+        <p class="beian-title">备案信息</p>
+        <a class="beian-link" href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">
+          豫ICP备2026018815号-1
+        </a>
+        <span class="beian-link beian-text">
+          公安联网备案：af6c7ecd3acff61ff3fc44ca3009060f
+        </span>
+      </div>
     </div>
   </div>
 </template>
@@ -535,5 +535,51 @@ onUnmounted(() => {
 
 .more-logout {
   margin-top: 4px;
+}
+
+.beian-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 16px 8px 8px;
+  margin-top: 8px;
+  border-top: 1px solid #ebedf0;
+}
+
+.beian-title {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #646566;
+}
+
+.beian-link {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #969799;
+  text-decoration: none;
+  transition: color 0.15s;
+}
+
+.beian-link:hover {
+  color: #1989fa;
+}
+
+.beian-text {
+  cursor: default;
+  user-select: text;
+}
+
+.beian-text:hover {
+  color: #969799;
+}
+
+.beian-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
 }
 </style>
