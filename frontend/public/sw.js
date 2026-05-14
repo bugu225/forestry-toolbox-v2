@@ -1,4 +1,4 @@
-const SW_VERSION = "v8";
+const SW_VERSION = "v9";
 const CACHE_PREFIX = "ftb2";
 const SHELL_CACHE = `${CACHE_PREFIX}-shell-${SW_VERSION}`;
 const STATIC_CACHE = `${CACHE_PREFIX}-static-${SW_VERSION}`;
